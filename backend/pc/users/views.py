@@ -4,7 +4,6 @@ from rest_framework.decorators import action, api_view
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.tokens import RefreshToken
-
 from .models import Role, Permission, RolePermission
 from .serializers import (
     LoginSerializer, UserDetailSerializer, UserListSerializer,
@@ -45,7 +44,7 @@ class AuthViewSet(viewsets.ViewSet):
 class UserViewSet(viewsets.ModelViewSet):
     queryset = User.objects.all()
     serializer_class = UserDetailSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AllowAny]
 
     def get_serializer_class(self):
         if self.action == "create":

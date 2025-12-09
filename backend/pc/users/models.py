@@ -1,19 +1,6 @@
 from django.db import models
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
 from core.models import Service
-'''class Service(models.Model):
-    nom = models.CharField(max_length=100)
-    description = models.TextField(blank=True, null=True)
-    # chef référencé après la définition du User (on mettra la FK dynamique dans le projet si besoin)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        db_table = 'core_service'
-        verbose_name = "Service"
-        verbose_name_plural = "Services"
-
-    def __str__(self):
-        return self.nom'''
 
 
 class Role(models.Model):
