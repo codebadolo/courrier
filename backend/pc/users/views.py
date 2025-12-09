@@ -1,4 +1,4 @@
-from rest_framework import viewsets, status
+from rest_framework import viewsets, status, permissions
 from rest_framework.response import Response
 from rest_framework.decorators import action, api_view
 from rest_framework.permissions import IsAuthenticated, AllowAny
@@ -14,39 +14,60 @@ from .serializers import (
 
 User = get_user_model()
 
+from rest_framework import viewsets
+from rest_framework.decorators import action
+from rest_framework.response import Response
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.authtoken.models import Token
+
+from django.contrib.auth import authenticate
+from .serializers import UserDetailSerializer, LoginSerializer
+
+
 class AuthViewSet(viewsets.ViewSet):
     permission_classes = [AllowAny]
 
+    # -----------------------------------------
+    # LOGIN → retourne un token authtoken
+    # -----------------------------------------
     @action(detail=False, methods=["post"])
     def login(self, request):
         serializer = LoginSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        user = serializer.validated_data["user"]
-        refresh = RefreshToken.for_user(user)
+        email = serializer.validated_data["email"]
+        password = serializer.validated_data["password"]
+
+        user = authenticate(request, email=email, password=password)
+        if not user:
+            return Response({"detail": "Identifiants invalides"}, status=400)
+
+        token, created = Token.objects.get_or_create(user=user)
 
         return Response({
-            "refresh": str(refresh),
-            "access": str(refresh.access_token),
+            "token": token.key,
             "user": UserDetailSerializer(user).data
         })
 
+    # -----------------------------------------
+    # LOGOUT → supprime le token
+    # -----------------------------------------
     @action(detail=False, methods=["post"], permission_classes=[IsAuthenticated])
     def logout(self, request):
         try:
-            token = RefreshToken(request.data.get("refresh"))
-            token.blacklist()
+            request.user.auth_token.delete()
         except Exception:
             pass
 
         return Response({"detail": "Déconnecté avec succès"})
 
+
 class UserViewSet(viewsets.ModelViewSet):
     queryset = User.objects.all()
     serializer_class = UserDetailSerializer
-    permission_classes = [AllowAny]
+    permission_classes = [permissions.AllowAny]
 
-    def get_serializer_class(self):
+    ''' def get_serializer_class(self):
         if self.action == "create":
             return UserCreateSerializer
         if self.action in ["update", "partial_update"]:
@@ -81,7 +102,7 @@ class UserViewSet(viewsets.ModelViewSet):
         user.set_password(serializer.validated_data["new_password"])
         user.save()
         return Response({"detail": "Mot de passe modifié"})
-
+    '''
 class RoleViewSet(viewsets.ModelViewSet):
     queryset = Role.objects.all()
     serializer_class = RoleSerializer

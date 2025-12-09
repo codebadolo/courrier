@@ -42,6 +42,7 @@ INSTALLED_APPS = [
     "corsheaders",
     'drf_yasg',
     'rest_framework.authtoken',
+    #'rest_framework_simplejwt',
     'users',
     'courriers',
     'django_extensions',
@@ -112,11 +113,11 @@ DATABASES = {
 # Retrieved 2025-12-04, License - CC BY-SA 4.0
 
 REST_FRAMEWORK = {
-    "DEFAULT_AUTHENTICATION_CLASSES": (
-        "rest_framework_simplejwt.authentication.JWTAuthentication",
-    ),
-    
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "rest_framework.authentication.TokenAuthentication",
+    ],
 }
+
 
 AUTH_USER_MODEL = 'users.User'
 

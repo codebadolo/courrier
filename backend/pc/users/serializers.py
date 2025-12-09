@@ -18,27 +18,12 @@ class UserSerializer(serializers.ModelSerializer):
             "actif",
         ]
 
+from rest_framework import serializers
+
 class LoginSerializer(serializers.Serializer):
     email = serializers.EmailField()
-    password = serializers.CharField(write_only=True)
+    password = serializers.CharField()
 
-    def validate(self, data):
-        email = data.get("email")
-        password = data.get("password")
-
-        if not email or not password:
-            raise serializers.ValidationError("Email et mot de passe requis.")
-
-        user = authenticate(username=email, password=password)
-
-        if not user:
-            raise serializers.ValidationError("Identifiants invalides.")
-
-        if not user.actif:
-            raise serializers.ValidationError("Ce compte est désactivé.")
-
-        data["user"] = user
-        return data
 
 class UserCreateSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True)
