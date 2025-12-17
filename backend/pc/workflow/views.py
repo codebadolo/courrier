@@ -7,8 +7,6 @@ from .serializers import (
     WorkflowStepSerializer,
     WorkflowActionSerializer
 )
-
-
 class WorkflowViewSet(viewsets.ModelViewSet):
     queryset = Workflow.objects.all()
     serializer_class = WorkflowSerializer

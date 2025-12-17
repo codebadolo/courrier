@@ -1,40 +1,37 @@
 from rest_framework import viewsets, status, permissions
 from rest_framework.response import Response
-from rest_framework.decorators import action, api_view
+from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated, AllowAny
-from django.contrib.auth import get_user_model
-from rest_framework_simplejwt.tokens import RefreshToken
+from django.contrib.auth import get_user_model, authenticate
+from rest_framework.authtoken.models import Token
+
 from .models import Role, Permission, RolePermission
 from .serializers import (
-    LoginSerializer, UserDetailSerializer, UserListSerializer,
-    UserCreateSerializer, UserUpdateSerializer, ChangePasswordSerializer,
-    RoleSerializer, PermissionSerializer, RolePermissionSerializer
-    
+    LoginSerializer,
+    UserDetailSerializer,
+    UserListSerializer,
+    UserCreateSerializer,
+    UserUpdateSerializer,
+    ChangePasswordSerializer,
+    RoleSerializer,
+    PermissionSerializer,
+    RolePermissionSerializer,
 )
+
 
 User = get_user_model()
 
-from rest_framework import viewsets
-from rest_framework.decorators import action
-from rest_framework.response import Response
-from rest_framework.permissions import AllowAny, IsAuthenticated
-from rest_framework.authtoken.models import Token
 
-from django.contrib.auth import authenticate
-from .serializers import UserDetailSerializer, LoginSerializer
-
-
+# -------------------------
+# Auth ViewSet
+# -------------------------
 class AuthViewSet(viewsets.ViewSet):
     permission_classes = [AllowAny]
 
-    # -----------------------------------------
-    # LOGIN → retourne un token authtoken
-    # -----------------------------------------
     @action(detail=False, methods=["post"])
     def login(self, request):
         serializer = LoginSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-
         email = serializer.validated_data["email"]
         password = serializer.validated_data["password"]
 
@@ -49,31 +46,32 @@ class AuthViewSet(viewsets.ViewSet):
             "user": UserDetailSerializer(user).data
         })
 
-    # -----------------------------------------
-    # LOGOUT → supprime le token
-    # -----------------------------------------
     @action(detail=False, methods=["post"], permission_classes=[IsAuthenticated])
     def logout(self, request):
         try:
             request.user.auth_token.delete()
         except Exception:
             pass
-
         return Response({"detail": "Déconnecté avec succès"})
 
 
+# -------------------------
+# User ViewSet
+# -------------------------
 class UserViewSet(viewsets.ModelViewSet):
     queryset = User.objects.all()
-    serializer_class = UserDetailSerializer
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [IsAuthenticated]
 
-    ''' def get_serializer_class(self):
-        if self.action == "create":
-            return UserCreateSerializer
-        if self.action in ["update", "partial_update"]:
-            return UserUpdateSerializer
+    def get_serializer_class(self):
+        """
+        Retourne le serializer approprié selon l'action
+        """
         if self.action == "list":
             return UserListSerializer
+        elif self.action == "create":
+            return UserCreateSerializer
+        elif self.action in ["update", "partial_update"]:
+            return UserUpdateSerializer
         return UserDetailSerializer
 
     @action(detail=True, methods=["post"])
@@ -94,15 +92,17 @@ class UserViewSet(viewsets.ModelViewSet):
     def change_password(self, request):
         serializer = ChangePasswordSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-
         user = request.user
         if not user.check_password(serializer.validated_data["old_password"]):
             return Response({"detail": "Ancien mot de passe incorrect"}, status=400)
-
         user.set_password(serializer.validated_data["new_password"])
         user.save()
         return Response({"detail": "Mot de passe modifié"})
-    '''
+
+
+# -------------------------
+# Role, Permission & RolePermission
+# -------------------------
 class RoleViewSet(viewsets.ModelViewSet):
     queryset = Role.objects.all()
     serializer_class = RoleSerializer
@@ -119,11 +119,3 @@ class RolePermissionViewSet(viewsets.ModelViewSet):
     queryset = RolePermission.objects.all()
     serializer_class = RolePermissionSerializer
     permission_classes = [IsAuthenticated]
-
-'''class SignatureViewSet(viewsets.ModelViewSet):
-    queryset = Signature.objects.all()
-    serializer_class = SignatureSerializer
-    permission_classes = [IsAuthenticated]
-
-    def perform_create(self, serializer):
-        serializer.save(user=self.request.user)'''

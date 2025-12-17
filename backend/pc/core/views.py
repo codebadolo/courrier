@@ -11,7 +11,7 @@ from .serializers import (
 class ServiceViewSet(viewsets.ModelViewSet):
     queryset = Service.objects.all().order_by("nom")
     serializer_class = ServiceSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.AllowAny]
     filter_backends = [filters.SearchFilter]
     search_fields = ["nom", "description"]
 
@@ -19,7 +19,7 @@ class ServiceViewSet(viewsets.ModelViewSet):
 class CategoryViewSet(viewsets.ModelViewSet):
     queryset = Category.objects.all().order_by("name")
     serializer_class = CategorySerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.AllowAny]
     filter_backends = [filters.SearchFilter]
     search_fields = ["name", "description"]
 

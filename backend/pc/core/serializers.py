@@ -1,16 +1,28 @@
 from rest_framework import serializers
 from .models import Service, Category, ClassificationRule, AuditLog
 
+from users.models import User
+
+
+class MiniUserSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ["id", "prenom", "nom", "email"]
+        read_only_fields = fields
+
 
 class ServiceSerializer(serializers.ModelSerializer):
-    chef_name = serializers.CharField(source="chef.get_full_name", read_only=True)
+    chef_detail = MiniUserSerializer(source="chef", read_only=True)
 
     class Meta:
         model = Service
         fields = [
-            "id", "nom", "description",
-            "chef", "chef_name",
-            "created_at"
+            "id",
+            "nom",
+            "description",
+            "chef",          # ID du chef → pour l'édition
+            "chef_detail",   # Détails du chef → pour l'affichage
+            "created_at",
         ]
 
 

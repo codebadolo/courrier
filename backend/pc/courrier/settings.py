@@ -114,9 +114,14 @@ DATABASES = {
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
-        "rest_framework.authentication.TokenAuthentication",
+        "rest_framework.authentication.TokenAuthentication",       
     ],
 }
+
+AUTHENTICATION_BACKENDS = [
+    'users.auth_backend.EmailAuthBackend',  # <- ton backend personnalisé
+    'django.contrib.auth.backends.ModelBackend',  # backend par défaut
+]
 
 
 AUTH_USER_MODEL = 'users.User'
@@ -173,3 +178,7 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # settings.py
 SESSION_COOKIE_SECURE = False
 CSRF_COOKIE_SECURE = False
+
+# ⚠️ TEMPORAIRE – à ne pas pousser sur GitHub
+GEMINI_API_KEY = "AIzaSyAUdd8oSpwVB5cz2IykZ8jUqjWmjYY_yFU"
+
