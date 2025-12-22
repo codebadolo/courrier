@@ -7,6 +7,9 @@ from .serializers import (
     WorkflowStepSerializer,
     WorkflowActionSerializer
 )
+from rest_framework.views import APIView
+from courriers.models import Courrier
+
 class WorkflowViewSet(viewsets.ModelViewSet):
     queryset = Workflow.objects.all()
     serializer_class = WorkflowSerializer
@@ -93,3 +96,43 @@ class WorkflowActionViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = WorkflowAction.objects.all()
     serializer_class = WorkflowActionSerializer
     permission_classes = [permissions.IsAuthenticated]
+
+class CourrierCreateWithIA(APIView):
+    def post(self, request):
+        fichier = request.FILES.get("file")  # image envoyée depuis frontend
+        objet = request.data.get("objet")
+        utilisateur = request.user
+
+        
+
+        if not utilisateur.is_authenticated:
+            return Response({"error": "Connexion requise"}, status=401)
+
+        # Création du courrier
+        courrier = Courrier.objects.create(
+            reference="REF-0001",
+            objet=objet,
+            created_by=utilisateur
+        )
+
+        # Sauvegarde du fichier temporairement
+        file_path = f"C:/tmp/{fichier.name}"
+        with open(file_path, "wb") as f:
+            f.write(fichier.read())
+
+        # OCR
+        texte = ocr.process_ocr(courrier, file_path)
+
+        # Classification IA
+        classification = gemini.classify_courrier_with_gemini(texte)
+        courrier.categorie = classification["categorie"]
+        courrier.service = classification["service"]
+        courrier.save()
+
+        return Response({
+            "id": courrier.id,
+            "reference": courrier.reference,
+            "categorie": courrier.categorie,
+            "service": courrier.service,
+            "contenu_texte": courrier.contenu_texte
+        })

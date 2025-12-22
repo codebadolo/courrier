@@ -1,14 +1,23 @@
-def classify_text(text: str):
-    """
-    Retourne catégorie et service recommandé selon le texte.
-    Remplacer par NLP avancé si nécessaire.
-    """
-    text_lower = text.lower()
-    if "rh" in text_lower:
-        return "Ressources Humaines", "Service RH"
-    elif "facture" in text_lower or "finance" in text_lower:
-        return "Finance", "Service Finance"
-    elif "technique" in text_lower:
-        return "Technique", "Service Technique"
-    else:
-        return "Administratif", "Service Administratif"
+# 
+def classifier_courrier(text):
+    text = text.lower()
+
+    if "stage" in text:
+        return {
+            "category": "RH",
+            "service": "Ressources Humaines",
+            "priorite": "normale"
+        }
+
+    if "facture" in text or "paiement" in text:
+        return {
+            "category": "Financier",
+            "service": "Comptabilité",
+            "priorite": "haute"
+        }
+
+    return {
+        "category": "Autre",
+        "service": None,
+        "priorite": "normale"
+    }

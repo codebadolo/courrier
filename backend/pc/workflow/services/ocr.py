@@ -1,38 +1,71 @@
-# workflow/services/ocr.py
-import pytesseract
-from courriers.models import Courrier
-from pdf2image import convert_from_path
 import os
+from PIL import Image
+import pytesseract
+from pdf2image import convert_from_path
+from PyPDF2 import PdfReader
 
-def process_ocr(courrier: Courrier, file_path: str):
+# Chemin explicite vers tesseract (Windows)
+pytesseract.pytesseract.tesseract_cmd = (
+    r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+)
+
+
+def process_ocr(file_path: str, courrier):
     """
-    Extrait le texte d'une pièce jointe (PDF ou image) et met à jour le courrier.
+    - PDF texte : extraction directe
+    - PDF scanné (image) : OCR
+    - Image seule : OCR
     """
-    texte_complet = ""
 
-    # Vérifier l'extension
-    ext = os.path.splitext(file_path)[1].lower()
+    extracted_text = ""
 
-    if ext in [".pdf"]:
-        # Conversion PDF -> images
+    # -------------------------
+    # CAS 1 : PDF
+    # -------------------------
+    if file_path.lower().endswith(".pdf"):
+
+        # 1️⃣ Tentative PDF TEXTE
         try:
-            # Si vous êtes sous Windows, indiquez le chemin vers Poppler si nécessaire
-            # images = convert_from_path(file_path, poppler_path=r"C:\chemin\vers\poppler\bin")
-            images = convert_from_path(file_path)
+            reader = PdfReader(file_path)
+            for page in reader.pages:
+                extracted_text += page.extract_text() or ""
+        except Exception:
+            pass  # on bascule sur OCR image
+
+        # 2️⃣ Si vide → OCR sur images du PDF
+        if not extracted_text.strip():
+            try:
+                images = convert_from_path(file_path)
+                for image in images:
+                    extracted_text += pytesseract.image_to_string(
+                        image,
+                        lang="fra+eng",
+                        config="--oem 3 --psm 6"
+                    )
+            except Exception as e:
+                raise ValueError(
+                    f"Impossible de traiter le PDF via OCR (Poppler ?) : {e}"
+                )
+
+    # -------------------------
+    # CAS 2 : IMAGE
+    # -------------------------
+    else:
+        try:
+            image = Image.open(file_path)
+            extracted_text = pytesseract.image_to_string(
+                image,
+                lang="fra+eng",
+                config="--oem 3 --psm 6"
+            )
         except Exception as e:
-            raise ValueError(f"Impossible de convertir le PDF en image : {e}")
+            raise ValueError(f"OCR image impossible : {e}")
 
-        for image in images:
-            texte_complet += pytesseract.image_to_string(image) + "\n"
+    # -------------------------
+    # Sauvegarde (optionnelle)
+    # -------------------------
+    if courrier:
+        courrier.contenu_texte = extracted_text
+        courrier.save(update_fields=["contenu_texte"])
 
-    else:
-        # Si c'est une image directement
-        texte_complet = pytesseract.image_to_string(file_path)
-
-    # Mettre à jour le champ contenu_texte
-    if courrier.contenu_texte:
-        courrier.contenu_texte += "\n" + texte_complet
-    else:
-        courrier.contenu_texte = texte_complet
-
-    courrier.save()
+    return extracted_text

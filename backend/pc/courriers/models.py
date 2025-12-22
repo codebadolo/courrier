@@ -18,7 +18,7 @@ class StatusCourrier(models.TextChoices):
 
 
 class Courrier(models.Model):
-    reference = models.CharField(max_length=100, unique=True)
+    reference = models.CharField(max_length=100, unique=True, blank=True)
     type = models.CharField(max_length=20, choices=TypeCourrier.choices, default=TypeCourrier.ENTRANT)
 
     objet = models.CharField(max_length=500)

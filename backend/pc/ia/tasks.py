@@ -6,7 +6,15 @@ import spacy
 import pytesseract
 from PIL import Image
 
-nlp = spacy.load("fr_core_news_md")  # modèle français spaCy
+# nlp = spacy.load("fr_core_news_md")  # modèle français spaCy
+
+_nlp = None
+
+def get_nlp():
+    global _nlp
+    if _nlp is None:
+        _nlp = spacy.load("fr_core_news_sm")  # PLUS LÉGER
+    return _nlp
 
 def process_courrier_automatique(courrier: Courrier):
     """
