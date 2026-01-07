@@ -22,6 +22,7 @@ from rest_framework import permissions
 from drf_yasg.views import get_schema_view
 from drf_yasg import openapi
 
+
 schema_view = get_schema_view(
    openapi.Info(
       title="Your API Title",
@@ -36,14 +37,16 @@ schema_view = get_schema_view(
 )
 urlpatterns = [
     path('admin/', admin.site.urls),
-  
-    path('api/users/',include('users.urls')),
-    path('api/courriers/',include('courriers.urls')),
-    path('api/core/',include('core.urls')),
-    path('api/workflow/',include('workflow.urls')),
-    path('api/ia/',include('ia.urls')),
-    path('api/dashboard/',include('dashboard.urls')),
-
+    
+     # API endpoints
+    path('api/core/', include('core.urls')),
+    path('api/courriers/', include('courriers.urls')),
+    path('api/dashboard/', include('dashboard.urls')),
+    path('api/ia/', include('ia.urls')),
+    path('api/users/', include('users.urls')),
+    path('api/workflow/', include('workflow.urls'))
+,
+    
     re_path(r'swagger(?P<format>\.json|\.yaml)$', schema_view.without_ui(cache_timeout=0), name='schema-json'),
     path('swagger/', schema_view.with_ui('swagger', cache_timeout=0), name='schema-swagger-ui'),
     path('redoc/', schema_view.with_ui('redoc', cache_timeout=0), name='schema-redoc'),

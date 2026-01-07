@@ -1,14 +1,16 @@
+from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from django.urls import path
-from .views import CourrierViewSet, CourrierCreateWithOCR, CourrierEntrantAPIView
+from .views import (
+    CourrierViewSet, ImputationViewSet,
+    PieceJointeViewSet, ModeleCourrierViewSet
+)
 
 router = DefaultRouter()
-router.register(r'courriers', CourrierViewSet, basename='courrier')
+router.register(r"courriers", CourrierViewSet, basename="courrier")
+router.register(r"imputations", ImputationViewSet, basename="imputation")
+router.register(r"pieces-jointes", PieceJointeViewSet, basename="piecejointe")
+router.register(r"modeles", ModeleCourrierViewSet, basename="modelecourrier")
 
-urlpatterns = router.urls
-
-# Ajouter la route POST pour OCR
-urlpatterns += [
-    path('create-with-ocr/', CourrierCreateWithOCR.as_view(), name='create-with-ocr'),
-    path("entrant/", CourrierEntrantAPIView.as_view()),
+urlpatterns = [
+    path('', include(router.urls)),
 ]

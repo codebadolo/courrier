@@ -1,233 +1,655 @@
 from django.utils import timezone
-from rest_framework import viewsets, status
+from django.db import transaction
+from django.db.models import Q, Count, Avg
+from django.shortcuts import get_object_or_404
+from rest_framework import viewsets, status, permissions, filters
+from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.views import APIView
-from .models import Courrier, PieceJointe
-from .serializers import CourrierSerializer, CourrierCreateSerializer
+from rest_framework.permissions import IsAuthenticated, AllowAny
+from django_filters.rest_framework import DjangoFilterBackend
+
+from .models import Courrier, Imputation, PieceJointe, ActionHistorique, ModeleCourrier
+from .serializers import (
+    CourrierListSerializer, CourrierDetailSerializer,
+    CourrierCreateSerializer, CourrierUpdateSerializer,
+    ImputationSerializer, ActionHistoriqueSerializer,
+    PieceJointeSerializer, ModeleCourrierSerializer,
+    CourrierStatsSerializer, ImportCourrierSerializer,
+    ExportCourrierSerializer
+)
 from workflow.services.ocr import process_ocr
 from workflow.services.accuse_reception import send_accuse_reception_email
 from workflow.services.classifier import classifier_courrier
-from workflow.models import WorkflowAction
+from core.models import Category, Service
 import uuid
+import logging
+import pandas as pd
+import json
+from datetime import datetime, timedelta
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
 
+logger = logging.getLogger(__name__)
 
 
 class CourrierViewSet(viewsets.ModelViewSet):
-    queryset = Courrier.objects.all().order_by('-created_at')
-    serializer_class = CourrierSerializer
-
-
-class CourrierCreateWithOCR(APIView):
-    parser_classes = [MultiPartParser, FormParser]
-
-    def post(self, request):
-        fichier = request.FILES.get("file")
-        objet = request.data.get("objet")
-        type_courrier = request.data.get("type")
-
-        if not fichier or not objet or not type_courrier:
-            return Response(
-                {"error": "Fichier, objet et type sont requis"}, status=400
+    """
+    ViewSet complet pour la gestion des courriers
+    """
+    permission_classes = [IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ['reference', 'objet', 'expediteur_nom', 'contenu_texte']
+    ordering_fields = ['created_at', 'date_reception', 'date_echeance', 'priorite']
+    ordering = ['-created_at']
+    
+    filterset_fields = {
+        'type': ['exact', 'in'],
+        'statut': ['exact', 'in'],
+        'priorite': ['exact', 'in'],
+        'confidentialite': ['exact', 'in'],
+        'canal': ['exact', 'in'],
+        'category': ['exact', 'in'],
+        'service_impute': ['exact', 'in'],
+        'created_by': ['exact'],
+        'date_reception': ['gte', 'lte', 'exact'],
+        'date_echeance': ['gte', 'lte', 'exact'],
+    }
+    
+    def get_queryset(self):
+        queryset = Courrier.objects.all()
+        
+        # Filtrage par type
+        type_courrier = self.request.query_params.get("type")
+        if type_courrier:
+            queryset = queryset.filter(type=type_courrier)
+        
+        # Filtrage par service de l'utilisateur
+        if not self.request.user.is_superuser:
+            user_service = self.request.user.service
+            if user_service:
+                queryset = queryset.filter(
+                    Q(service_impute=user_service) |
+                    Q(service_actuel=user_service) |
+                    Q(responsable_actuel=self.request.user)
+                )
+        
+        # Filtrage des courriers en retard
+        if self.request.query_params.get("en_retard") == "true":
+            queryset = queryset.filter(
+                date_echeance__lt=timezone.now().date(),
+                statut__in=['recu', 'impute', 'traitement']
             )
-
-        # Générer une référence unique
-        reference = f"CR-{uuid.uuid4().hex[:8].upper()}"
-
-        # Création du courrier
-        courrier = Courrier.objects.create(
-            reference=reference,
-            objet=objet,
-            type=type_courrier,
-            created_by=request.user if request.user.is_authenticated else None
-        )
-
-        # Enregistrement de la pièce jointe
-        pj = PieceJointe.objects.create(
-            courrier=courrier,
-            fichier=fichier,
-            uploaded_by=request.user if request.user.is_authenticated else None
-        )
-
-        # OCR si PDF ou image
+        
+        # Filtrage des courriers urgents
+        if self.request.query_params.get("urgent") == "true":
+            queryset = queryset.filter(priorite='urgente')
+        
+        return queryset
+    
+    def get_serializer_class(self):
+        if self.action == 'list':
+            return CourrierListSerializer
+        elif self.action in ['retrieve', 'create', 'update', 'partial_update']:
+            return CourrierDetailSerializer
+        return CourrierDetailSerializer
+    
+    def get_permissions(self):
+        if self.request.method == 'OPTIONS':
+            return [AllowAny()]
+        return super().get_permissions()
+    
+    @transaction.atomic
+    def create(self, request, *args, **kwargs):
+        """Création d'un courrier avec gestion des pièces jointes"""
+        serializer = CourrierCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        
         try:
-            texte = process_ocr(file_path=pj.fichier.path, courrier=courrier)
+            # Générer la référence
+            type_courrier = serializer.validated_data.get('type', 'entrant')
+            reference = self._generate_reference(type_courrier)
+            
+            # Créer le courrier
+            courrier_data = serializer.validated_data.copy()
+            courrier_data.pop('pieces_jointes', [])
+            ocr_enabled = courrier_data.pop('ocr', True)
+            classifier_enabled = courrier_data.pop('classifier', False)
+            creer_workflow = courrier_data.pop('creer_workflow', True)
+            
+            courrier = Courrier.objects.create(
+                reference=reference,
+                created_by=request.user,
+                **courrier_data
+            )
+            
+            # Gérer les pièces jointes et OCR
+            texte_ocr_global = self._process_pieces_jointes(
+                request.FILES.getlist('pieces_jointes', []),
+                courrier,
+                request.user,
+                ocr_enabled
+            )
+            
+            if texte_ocr_global:
+                courrier.contenu_texte = texte_ocr_global
+                courrier.save(update_fields=['contenu_texte'])
+            
+            # Classification IA
+            if classifier_enabled:
+                self._process_classification_ia(courrier, request.user)
+            
+            # Créer un workflow si demandé
+            if creer_workflow:
+                self._creer_workflow_automatique(courrier, request.user)
+            
+            # Journaliser
+            ActionHistorique.objects.create(
+                courrier=courrier,
+                user=request.user,
+                action="CREATION",
+                commentaire=f"Courrier {type_courrier} créé"
+            )
+            
+            return Response(
+                CourrierDetailSerializer(courrier, context={'request': request}).data,
+                status=status.HTTP_201_CREATED
+            )
+            
+        except Exception as e:
+            logger.error(f"Erreur création courrier: {str(e)}", exc_info=True)
+            return Response(
+                {"error": f"Erreur création: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    @action(detail=True, methods=['post'])
+    def imputer(self, request, pk=None):
+        """Imputer un courrier à un service"""
+        courrier = self.get_object()
+        service_id = request.data.get('service_id')
+        commentaire = request.data.get('commentaire', '')
+        
+        if not service_id:
+            return Response(
+                {"error": "Le service est requis"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            service = Service.objects.get(id=service_id)
+            
+            # Créer l'imputation
+            imputation = Imputation.objects.create(
+                courrier=courrier,
+                service=service,
+                responsable=request.user,
+                commentaire=commentaire
+            )
+            
+            # Mettre à jour le courrier
+            courrier.service_impute = service
+            courrier.service_actuel = service
+            courrier.responsable_actuel = request.user
+            courrier.statut = 'impute'
+            courrier.save()
+            
+            # Journaliser
+            ActionHistorique.objects.create(
+                courrier=courrier,
+                user=request.user,
+                action="IMPUTATION",
+                commentaire=f"Imputé au service {service.nom}"
+            )
+            
+            return Response(
+                {
+                    "message": "Courrier imputé avec succès",
+                    "imputation": ImputationSerializer(imputation).data
+                },
+                status=status.HTTP_200_OK
+            )
+            
+        except Service.DoesNotExist:
+            return Response(
+                {"error": "Service non trouvé"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+    
+    @action(detail=True, methods=['post'])
+    def traiter(self, request, pk=None):
+        """Marquer un courrier comme en traitement"""
+        courrier = self.get_object()
+        
+        if courrier.statut != 'impute':
+            return Response(
+                {"error": "Le courrier doit être imputé avant traitement"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        courrier.statut = 'traitement'
+        courrier.save(update_fields=['statut'])
+        
+        ActionHistorique.objects.create(
+            courrier=courrier,
+            user=request.user,
+            action="DEBUT_TRAITEMENT",
+            commentaire="Début du traitement"
+        )
+        
+        return Response(
+            {"message": "Courrier en traitement"},
+            status=status.HTTP_200_OK
+        )
+    
+    @action(detail=True, methods=['post'])
+    def repondre(self, request, pk=None):
+        """Marquer un courrier comme répondu"""
+        courrier = self.get_object()
+        reponse_texte = request.data.get('reponse')
+        
+        if not reponse_texte:
+            return Response(
+                {"error": "Le texte de réponse est requis"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        courrier.statut = 'repondu'
+        courrier.date_cloture = timezone.now().date()
+        courrier.save(update_fields=['statut', 'date_cloture'])
+        
+        ActionHistorique.objects.create(
+            courrier=courrier,
+            user=request.user,
+            action="REPONSE",
+            commentaire=f"Réponse envoyée: {reponse_texte[:100]}..."
+        )
+        
+        return Response(
+            {"message": "Courrier marqué comme répondu"},
+            status=status.HTTP_200_OK
+        )
+    
+    @action(detail=True, methods=['post'])
+    def archiver(self, request, pk=None):
+        """Archiver un courrier"""
+        courrier = self.get_object()
+        
+        courrier.archived = True
+        courrier.date_archivage = timezone.now().date()
+        courrier.save(update_fields=['archived', 'date_archivage'])
+        
+        ActionHistorique.objects.create(
+            courrier=courrier,
+            user=request.user,
+            action="ARCHIVAGE",
+            commentaire="Courrier archivé"
+        )
+        
+        return Response(
+            {"message": "Courrier archivé"},
+            status=status.HTTP_200_OK
+        )
+    
+    @action(detail=False, methods=['get'])
+    def statistiques(self, request):
+        """Récupérer les statistiques des courriers"""
+        queryset = self.get_queryset()
+        
+        stats = {
+            'total': queryset.count(),
+            'entrants': queryset.filter(type='entrant').count(),
+            'sortants': queryset.filter(type='sortant').count(),
+            'internes': queryset.filter(type='interne').count(),
+            'en_cours': queryset.filter(statut__in=['recu', 'impute', 'traitement']).count(),
+            'en_retard': queryset.filter(
+                date_echeance__lt=timezone.now().date(),
+                statut__in=['recu', 'impute', 'traitement']
+            ).count(),
+            'traites': queryset.filter(statut='repondu').count(),
+            'taux_traitement': 0,
+            'delai_moyen': 0
+        }
+        
+        # Calcul du taux de traitement
+        if stats['total'] > 0:
+            stats['taux_traitement'] = round((stats['traites'] / stats['total']) * 100, 2)
+        
+        # Calcul du délai moyen de traitement
+        courriers_traites = queryset.filter(
+            statut='repondu',
+            date_reception__isnull=False,
+            date_cloture__isnull=False
+        )
+        if courriers_traites.exists():
+            delais = [
+                (c.date_cloture - c.date_reception).days 
+                for c in courriers_traites
+            ]
+            stats['delai_moyen'] = round(sum(delais) / len(delais), 2)
+        
+        serializer = CourrierStatsSerializer(stats)
+        return Response(serializer.data)
+    
+    @action(detail=False, methods=['post'])
+    def import_csv(self, request):
+        """Importer des courriers depuis un fichier CSV"""
+        serializer = ImportCourrierSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        
+        fichier = serializer.validated_data['fichier']
+        type_courrier = serializer.validated_data['type_courrier']
+        mapping = serializer.validated_data.get('mapping', {})
+        
+        try:
+            # Lire le fichier
+            if fichier.name.endswith('.csv'):
+                df = pd.read_csv(fichier)
+            elif fichier.name.endswith(('.xlsx', '.xls')):
+                df = pd.read_excel(fichier)
+            else:
+                return Response(
+                    {"error": "Format de fichier non supporté"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Appliquer le mapping
+            if mapping:
+                df = df.rename(columns=mapping)
+            
+            # Importer les courriers
+            resultats = []
+            for _, row in df.iterrows():
+                try:
+                    courrier = Courrier.objects.create(
+                        reference=self._generate_reference(type_courrier),
+                        type=type_courrier,
+                        objet=row.get('objet', ''),
+                        expediteur_nom=row.get('expediteur_nom', ''),
+                        expediteur_email=row.get('expediteur_email', ''),
+                        date_reception=row.get('date_reception') or timezone.now().date(),
+                        created_by=request.user
+                    )
+                    resultats.append({
+                        'reference': courrier.reference,
+                        'status': 'success'
+                    })
+                except Exception as e:
+                    resultats.append({
+                        'ligne': _ + 1,
+                        'status': 'error',
+                        'error': str(e)
+                    })
+            
+            return Response({
+                "message": f"Import terminé: {len([r for r in resultats if r['status'] == 'success'])} succès",
+                "resultats": resultats
+            })
+            
         except Exception as e:
             return Response(
-                {"error": f"Impossible de traiter le fichier via OCR: {e}"},
-                status=500
+                {"error": f"Erreur import: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-
-        serializer = CourrierSerializer(courrier)
-        return Response(serializer.data, status=201)
-
-
-
-#  class CourrierEntrantCreateAPIView(APIView):
-#     """
-#     Enregistrement complet d’un courrier entrant
-#     """
-#     def post(self, request):
-#         serializer = CourrierCreateSerializer(data=request.data)
-#         if not serializer.is_valid():
-#             return Response(serializer.errors, status=400)
-
-#         data = serializer.validated_data
-
-#         # Générer une référence automatique
-#         reference = f"CE/2025/{uuid.uuid4().hex[:5].upper()}"  # exemple CE/2025/00123
-
-#         # Création du courrier
-#         courrier = Courrier.objects.create(
-#             reference=reference,
-#             objet=data["objet"],
-#             type=data["type"],
-#             confidentialite=data.get("confidentialite", "normal"),
-#             date_reception=data.get("date_reception"),
-#             expediteur_nom=data.get("expediteur_nom"),
-#             expediteur_adresse=data.get("expediteur_adresse"),
-#             expediteur_email=data.get("expediteur_email"),
-#             canal=data.get("canal"),
-#             category=data.get("category"),
-#             service_impute=data.get("service_impute"),
-#             created_by=request.user if request.user.is_authenticated else None
-#         )
-
-#         # Gestion des pièces jointes
-#         fichiers = data.get("pieces_jointes", [])
-#         for f in fichiers:
-#             pj = PieceJointe.objects.create(
-#                 courrier=courrier,
-#                 fichier=f,
-#                 uploaded_by=request.user if request.user.is_authenticated else None
-#             )
-#             # OCR automatique si demandé
-#             if data.get("ocr", True):
-#                 try:
-#                     texte = process_ocr(file_path=pj.fichier.path, courrier=courrier)
-#                 except Exception as e:
-#                     return Response(
-#                         {"error": f"OCR impossible pour {f.name}: {e}"},
-#                         status=500
-#                     )
-
-#         serializer_out = CourrierSerializer(courrier)
-#         return Response(serializer_out.data, status=201)
-
-
-class CourrierEntrantAPIView(APIView):
-    parser_classes = [MultiPartParser, FormParser, JSONParser]
-
-    def post(self, request):
-        # --------------------------
-        # Données principales
-        # --------------------------
-        objet = request.data.get("objet")
-        confidentialite = request.data.get("confidentialite", "normal")
-        date_reception = request.data.get("date_reception")
-        expediteur_nom = request.data.get("expediteur_nom")
-        expediteur_email = request.data.get("expediteur_email")
-        canal = request.data.get("canal")
-        category_id = request.data.get("category")
-        service_id = request.data.get("service_impute")
-        classifier = request.data.get("classifier", "false") == "true"
-
-        ocr_enabled = request.data.get("ocr", "true") == "true"
-        fichiers = request.FILES.getlist("pieces_jointes")
-
-        if not objet:
-            return Response(
-                {"error": "Le champ 'objet' est obligatoire"},
-                status=400
-            )
-
-        # --------------------------
-        # Référence automatique
-        # --------------------------
-        reference = f"CE/{timezone.now().year}/{uuid.uuid4().hex[:6].upper()}"
-
-        courrier = Courrier.objects.create(
-            reference=reference,
-            type="entrant",
-            objet=objet,
-            confidentialite=confidentialite,
-            date_reception=date_reception,
-            expediteur_nom=expediteur_nom,
-            expediteur_email=expediteur_email,
-            canal=canal,
-            category_id=category_id,
-            service_impute_id=service_id,
-            created_by=request.user if request.user.is_authenticated else None
-        )
-
-        texte_ocr_global = ""
-
-        # --------------------------
-        # Pièces jointes + OCR
-        # --------------------------
-        for fichier in fichiers:
-            pj = PieceJointe.objects.create(
-                courrier=courrier,
-                fichier=fichier,
-                uploaded_by=request.user if request.user.is_authenticated else None
-            )
-
-            if ocr_enabled:
-                texte = process_ocr(pj.fichier.path, courrier=None)
-                texte_ocr_global += "\n" + texte
-
-        if ocr_enabled and texte_ocr_global.strip():
-            courrier.contenu_texte = texte_ocr_global
-            courrier.save(update_fields=["contenu_texte"])
-
-        from workflow.services.classifier import classifier_courrier
-
-        # ... après OCR
-        if request.data.get("classifier") == "true":
-            result = classifier_courrier(courrier)
-            # On met à jour le courrier
-            if "category" in result:
-                # si tu stockes category comme ForeignKey, récupère l'objet
-                from core.models import Category
-                cat = Category.objects.filter(nom=result["category"]).first()
-                courrier.category = cat
-
-            if "service_impute" in result:
-                from core.models import Service
-                serv = Service.objects.filter(nom=result["service_impute"]).first()
-                courrier.service_impute = serv
-
-            # si priorité existe, tu peux ajouter un champ dans le modèle
-            # courrier.priority = result.get("priority", "Normal")
-
-            courrier.save()
-
-
-        if classifier:
-            result = classifier_courrier(courrier)
-            courrier.category = result.get("category")
-            courrier.service_impute = result.get("service")
-            courrier.save(update_fields=["category", "service_impute"])
-
-            WorkflowAction.objects.create(
-                courrier=courrier,
-                user=request.user,
-                action="Classification automatique",
-                commentaire=f"Catégorie: {result.get('category')} | Service: {result.get('service')}"
-            )
-
-        # --- Accusé de réception email ---
-        if canal.lower() == "email" and courrier.expediteur_email:
-            send_accuse_reception_email(courrier)
-            WorkflowAction.objects.create(
-                courrier=courrier,
-                user=request.user,
-                action="Accusé de réception envoyé",
-                commentaire="Envoyé par email"
-            )
-
-
+    
+    @action(detail=False, methods=['post'])
+    def export(self, request):
+        """Exporter des courriers"""
+        serializer = ExportCourrierSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        
+        format = serializer.validated_data['format']
+        periode_debut = serializer.validated_data.get('periode_debut')
+        periode_fin = serializer.validated_data.get('periode_fin')
+        type_courrier = serializer.validated_data['type_courrier']
+        colonnes = serializer.validated_data['colonnes']
+        
+        # Filtrer les courriers
+        queryset = self.get_queryset()
+        if periode_debut:
+            queryset = queryset.filter(date_reception__gte=periode_debut)
+        if periode_fin:
+            queryset = queryset.filter(date_reception__lte=periode_fin)
+        if type_courrier != 'tous':
+            queryset = queryset.filter(type=type_courrier)
+        
+        # Préparer les données
+        data = []
+        for courrier in queryset:
+            item = {}
+            for colonne in colonnes:
+                if hasattr(courrier, colonne):
+                    value = getattr(courrier, colonne)
+                    if isinstance(value, datetime):
+                        value = value.strftime('%Y-%m-%d %H:%M')
+                    item[colonne] = value
+                elif colonne == 'category_nom' and courrier.category:
+                    item[colonne] = courrier.category.name
+                elif colonne == 'service_impute_nom' and courrier.service_impute:
+                    item[colonne] = courrier.service_impute.nom
+            data.append(item)
+        
+        # Exporter selon le format
+        if format == 'json':
+            return Response(data)
+        elif format == 'csv':
+            # Implémenter la génération CSV
+            pass
+        elif format == 'excel':
+            # Implémenter la génération Excel
+            pass
+        elif format == 'pdf':
+            # Implémenter la génération PDF
+            pass
+        
         return Response(
-            CourrierSerializer(courrier).data,
-            status=status.HTTP_201_CREATED
+            {"message": "Export non implémenté pour ce format"},
+            status=status.HTTP_501_NOT_IMPLEMENTED
         )
+    
+    # Méthodes utilitaires
+    def _generate_reference(self, type_courrier):
+        """Générer une référence unique"""
+        prefixes = {
+            'entrant': 'CE',
+            'sortant': 'CS',
+            'interne': 'CI'
+        }
+        prefix = prefixes.get(type_courrier, 'CR')
+        return f"{prefix}/{timezone.now().year}/{uuid.uuid4().hex[:6].upper()}"
+    
+    def _process_pieces_jointes(self, fichiers, courrier, user, ocr_enabled):
+        """Traiter les pièces jointes et OCR"""
+        texte_ocr_global = ""
+        
+        for fichier in fichiers:
+            try:
+                pj = PieceJointe.objects.create(
+                    courrier=courrier,
+                    fichier=fichier,
+                    uploaded_by=user
+                )
+                
+                if ocr_enabled:
+                    texte = process_ocr(pj.fichier.path)
+                    if texte:
+                        texte_ocr_global += f"\n--- {fichier.name} ---\n{texte}\n"
+                        
+            except Exception as e:
+                logger.error(f"Erreur pièce jointe {fichier.name}: {str(e)}")
+        
+        return texte_ocr_global
+    
+    def _process_classification_ia(self, courrier, user):
+        """Traiter la classification IA"""
+        try:
+            result = classifier_courrier(courrier)
+            
+            if result and 'category' in result:
+                # Mettre à jour la catégorie
+                category_name = result['category']
+                category = Category.objects.filter(name__icontains=category_name).first()
+                if category:
+                    courrier.category = category
+            
+            if result and 'service_impute' in result:
+                # Mettre à jour le service
+                service_name = result['service_impute']
+                service = Service.objects.filter(nom__icontains=service_name).first()
+                if service:
+                    courrier.service_impute = service
+                    courrier.statut = 'impute'
+                    
+                    # Créer l'imputation
+                    Imputation.objects.create(
+                        courrier=courrier,
+                        service=service,
+                        responsable=user,
+                        suggestion_ia=True,
+                        score_ia=result.get('confidence', 0.0)
+                    )
+            
+            courrier.save()
+            
+            ActionHistorique.objects.create(
+                courrier=courrier,
+                user=user,
+                action="CLASSIFICATION_IA",
+                commentaire=f"Catégorie: {result.get('category', 'N/A')}"
+            )
+            
+        except Exception as e:
+            logger.error(f"Erreur classification IA: {str(e)}")
+    
+    def _creer_workflow_automatique(self, courrier, user):
+        """Créer un workflow automatique"""
+        try:
+            from workflow.models import Workflow, WorkflowStep
+            
+            workflow = Workflow.objects.create(courrier=courrier)
+            
+            # Définir les étapes selon le type de courrier
+            if courrier.type == 'entrant':
+                steps_config = [
+                    {'label': 'Réception et enregistrement', 'role': 'agent_courrier'},
+                    {'label': 'Analyse préliminaire', 'role': 'chef'},
+                    {'label': 'Traitement technique', 'role': 'collaborateur'},
+                    {'label': 'Validation finale', 'role': 'direction'}
+                ]
+            elif courrier.type == 'sortant':
+                steps_config = [
+                    {'label': 'Rédaction', 'role': 'collaborateur'},
+                    {'label': 'Visa chef de service', 'role': 'chef'},
+                    {'label': 'Validation juridique', 'role': 'direction'},
+                    {'label': 'Signature et envoi', 'role': 'direction'}
+                ]
+            else:  # interne
+                steps_config = [
+                    {'label': 'Rédaction', 'role': 'collaborateur'},
+                    {'label': 'Validation hiérarchique', 'role': 'chef'},
+                    {'label': 'Diffusion', 'role': 'agent_courrier'}
+                ]
+            
+            # Créer les étapes
+            for i, config in enumerate(steps_config, 1):
+                WorkflowStep.objects.create(
+                    workflow=workflow,
+                    step_number=i,
+                    label=config['label']
+                )
+            
+            ActionHistorique.objects.create(
+                courrier=courrier,
+                user=user,
+                action="WORKFLOW_CREATE",
+                commentaire=f"Workflow créé avec {len(steps_config)} étapes"
+            )
+            
+        except Exception as e:
+            logger.error(f"Erreur création workflow: {str(e)}")
+            
+    @api_view(['GET'])
+    def courriers_sortants(request):
+        queryset = Courrier.objects.filter(type='sortant')
+        serializer = CourrierListSerializer(queryset, many=True, context={'request': request})
+        return Response(serializer.data)
+
+
+class ImputationViewSet(viewsets.ModelViewSet):
+    """ViewSet pour la gestion des imputations"""
+    queryset = Imputation.objects.all().order_by('-date_imputation')
+    serializer_class = ImputationSerializer
+    permission_classes = [IsAuthenticated]
+    
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        
+        # Filtrer par courrier
+        courrier_id = self.request.query_params.get('courrier_id')
+        if courrier_id:
+            queryset = queryset.filter(courrier_id=courrier_id)
+        
+        # Filtrer par service
+        service_id = self.request.query_params.get('service_id')
+        if service_id:
+            queryset = queryset.filter(service_id=service_id)
+        
+        # Filtrage par suggestion IA
+        suggestion_ia = self.request.query_params.get('suggestion_ia')
+        if suggestion_ia:
+            queryset = queryset.filter(suggestion_ia=(suggestion_ia.lower() == 'true'))
+        
+        return queryset
+
+
+class PieceJointeViewSet(viewsets.ModelViewSet):
+    """ViewSet pour la gestion des pièces jointes"""
+    queryset = PieceJointe.objects.all().order_by('-uploaded_at')
+    serializer_class = PieceJointeSerializer
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+    
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        
+        # Filtrer par courrier
+        courrier_id = self.request.query_params.get('courrier_id')
+        if courrier_id:
+            queryset = queryset.filter(courrier_id=courrier_id)
+        
+        return queryset
+    
+    def perform_create(self, serializer):
+        serializer.save(uploaded_by=self.request.user)
+
+
+class ModeleCourrierViewSet(viewsets.ModelViewSet):
+    """ViewSet pour la gestion des modèles de courrier"""
+    queryset = ModeleCourrier.objects.filter(actif=True).order_by('nom')
+    serializer_class = ModeleCourrierSerializer
+    permission_classes = [IsAuthenticated]
+    filter_backends = [filters.SearchFilter]
+    search_fields = ['nom', 'contenu']
+    
+    @action(detail=True, methods=['post'])
+    def utiliser(self, request, pk=None):
+        """Utiliser un modèle pour créer un courrier"""
+        modele = self.get_object()
+        
+        # Récupérer les variables du modèle
+        variables = modele.variables
+        valeurs = request.data.get('valeurs', {})
+        
+        # Remplacer les variables dans le contenu
+        contenu = modele.contenu
+        for var in variables:
+            if var in valeurs:
+                contenu = contenu.replace(f'{{{{ {var} }}}}', valeurs[var])
+        
+        return Response({
+            "contenu": contenu,
+            "entete": modele.entete,
+            "pied_page": modele.pied_page,
+            "modele": modele.nom
+        })

@@ -112,6 +112,7 @@ DATABASES = {
 # Posted by babak gholamirad
 # Retrieved 2025-12-04, License - CC BY-SA 4.0
 
+# settings.py
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "rest_framework.authentication.TokenAuthentication",       
@@ -180,5 +181,7 @@ SESSION_COOKIE_SECURE = False
 CSRF_COOKIE_SECURE = False
 
 # ⚠️ TEMPORAIRE – à ne pas pousser sur GitHub
-GEMINI_API_KEY = "AIzaSyAUdd8oSpwVB5cz2IykZ8jUqjWmjYY_yFU"
+GEMINI_API_KEY = "AIzaSyAphA58xLEnwWMhqRR_Vwx5w7IcRt5pbN8"
+
+
 
