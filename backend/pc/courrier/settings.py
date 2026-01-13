@@ -115,7 +115,11 @@ DATABASES = {
 # settings.py
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
-        "rest_framework.authentication.TokenAuthentication",       
+        "rest_framework.authentication.TokenAuthentication",
+        "rest_framework.authentication.SessionAuthentication",     
+    ],
+     "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.AllowAny",  
     ],
 }
 
@@ -180,8 +184,9 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 SESSION_COOKIE_SECURE = False
 CSRF_COOKIE_SECURE = False
 
+import os
 # ⚠️ TEMPORAIRE – à ne pas pousser sur GitHub
-GEMINI_API_KEY = "AIzaSyAphA58xLEnwWMhqRR_Vwx5w7IcRt5pbN8"
-
+GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "AIzaSyCe9tmbPd-28RQLxtxJdp5834lokebe0IE")
+GEMINI_API_KEY = GOOGLE_API_KEY  # Pour compatibilité
 
 

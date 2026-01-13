@@ -135,9 +135,9 @@ class WorkflowTemplateSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'nom', 'description', 'type_courrier', 'type_courrier_display',
             'category', 'category_detail', 'steps_config', 'active',
-            'utilisation_count', 'created_at'
+            'utilisation_count', 
         ]
-        read_only_fields = ['created_at']
+        #read_only_fields = ['created_at']
     
     def get_utilisation_count(self, obj):
         return Workflow.objects.filter(

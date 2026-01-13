@@ -512,3 +512,4 @@ class AccuseViewSet(viewsets.ModelViewSet):
         # ...
         
         return Response({"message": "Accusé renvoyé"})
+

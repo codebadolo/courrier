@@ -129,6 +129,13 @@ class CourrierDetailSerializer(serializers.ModelSerializer):
     service_actuel_detail = ServiceSerializer(source='service_actuel', read_only=True)
     responsable_actuel_detail = UserSerializer(source='responsable_actuel', read_only=True)
     created_by_detail = UserSerializer(source='created_by', read_only=True)
+    ocr = serializers.BooleanField(default=False, write_only=True, required=False )  
+    classifier = serializers.BooleanField(default=False, write_only=True, required=False )  
+    creer_workflow = serializers.BooleanField(default=False, write_only=True, required=False)
+    ia_suggestions_accepted = serializers.BooleanField(default=False, write_only=True, required=False)
+    ia_suggestions_data = serializers.JSONField(required=False, allow_null=True)
+    user_modifications = serializers.JSONField(required=False, allow_null=True)
+
     
     # Relations inverses
     pieces_jointes = PieceJointeSerializer(many=True, read_only=True)
@@ -191,13 +198,62 @@ class CourrierDetailSerializer(serializers.ModelSerializer):
             'workflow_existe', 'workflow_statut',
             
             # Relations
-            'pieces_jointes', 'imputations', 'historiques'
+            'pieces_jointes', 'imputations', 'historiques',
+            'type', 'objet', 'priorite', 'confidentialite',
+            'date_reception', 'expediteur_nom', 'expediteur_adresse',
+            'expediteur_email', 'destinataire_nom', 'canal',
+            'category', 'service_impute', 'date_echeance',
+            'pieces_jointes', 'ocr', 'classifier', 'creer_workflow',
+            'ia_suggestions_accepted', 'ia_suggestions_data', 'user_modifications'
+            
         ]
+
+        extra_kwargs = {
+            'expediteur_adresse': {'required': False, 'allow_blank': True},
+            'expediteur_email': {'required': False, 'allow_blank': True},
+            'destinataire_nom': {'required': False, 'allow_blank': True},
+            'date_echeance': {'required': False},
+            'priorite': {'default': 'normale'},
+        }
+
         read_only_fields = [
             'reference', 'created_at', 'updated_at', 'created_by',
             'jours_restants', 'est_en_retard', 'delai_traitement',
             'workflow_existe', 'workflow_statut'
         ]
+
+    def create(self, validated_data):
+        # Extraire les données IA
+        ia_suggestions_accepted = validated_data.pop('ia_suggestions_accepted', False)
+        ia_suggestions_data = validated_data.pop('ia_suggestions_data', None)
+        user_modifications = validated_data.pop('user_modifications', None)
+        
+        # Créer le courrier
+        courrier = super().create(validated_data)
+        
+        # Stocker les données IA dans meta_analyse si acceptées
+        if ia_suggestions_accepted and ia_suggestions_data:
+            courrier.meta_analyse = {
+                **ia_suggestions_data,
+                'user_modifications': user_modifications,
+                'ia_accepted_at': timezone.now().isoformat(),
+                'ia_accepted_by': self.context['request'].user.id
+            }
+            courrier.save(update_fields=['meta_analyse'])
+            
+            # Journaliser l'acceptation IA
+            ActionHistorique.objects.create(
+                courrier=courrier,
+                user=self.context['request'].user,
+                action="IA_SUGGESTIONS_ACCEPTED",
+                commentaire="L'utilisateur a accepté les suggestions de l'IA",
+                nouvelles_valeurs=json.dumps({
+                    'ia_suggestions': ia_suggestions_data,
+                    'user_modifications': user_modifications
+                }, ensure_ascii=False)
+            )
+        
+        return courrier   
     
     def get_jours_restants(self, obj):
         if obj.date_echeance:
@@ -236,19 +292,29 @@ class CourrierCreateSerializer(serializers.ModelSerializer):
         required=False,
         help_text="Liste des fichiers à joindre"
     )
-    ocr = serializers.BooleanField(default=True, write_only=True)
-    classifier = serializers.BooleanField(default=False, write_only=True)
-    creer_workflow = serializers.BooleanField(default=True, write_only=True)
+    ocr = serializers.BooleanField(default=True, write_only=True, required=False) # CHANGÉ
+    classifier = serializers.BooleanField(default=True, write_only=True, required=False) # CHANGÉ
+    creer_workflow = serializers.BooleanField(default=True, write_only=True, required=False) # CHANGÉ
     
     class Meta:
         model = Courrier
         fields = [
             'type', 'objet', 'priorite', 'confidentialite',
             'date_reception', 'expediteur_nom', 'expediteur_adresse',
-            'expediteur_email', 'destinataire_nom', 'canal',
-            'category', 'service_impute', 'date_echeance',
+            'expediteur_email', 'expediteur_telephone', 'destinataire_nom',
+            'canal', 'category', 'service_impute', 'date_echeance',
+            'contenu_texte',  # AJOUTÉ pour recevoir le texte OCR
             'pieces_jointes', 'ocr', 'classifier', 'creer_workflow'
         ]
+        extra_kwargs = {
+            'expediteur_adresse': {'required': False, 'allow_blank': True},
+            'expediteur_email': {'required': False, 'allow_blank': True},
+            'expediteur_telephone': {'required': False, 'allow_blank': True},
+            'destinataire_nom': {'required': False, 'allow_blank': True},
+            'date_echeance': {'required': False},
+            'priorite': {'default': 'normale'},
+            'contenu_texte': {'required': False, 'allow_blank': True},
+        }
     
     def validate(self, data):
         # Validation personnalisée

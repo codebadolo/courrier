@@ -1,354 +1,368 @@
 # workflow/services/gemini_courrier_service.py
 import json
 import logging
+import re
 from django.conf import settings
 from django.utils import timezone
 from core.models import Category, Service
 from courriers.models import ActionHistorique
-from .gemini_base import GeminiService
 
 logger = logging.getLogger(__name__)
 
+def robust_json_parser(response_text):
+    """
+    Parseur JSON robuste qui gère plusieurs formats de réponse
+    """
+    try:
+        # Nettoyage 1: Retirer les balises de code markdown
+        cleaned = response_text.strip()
+        
+        # Enlever ```json et ```
+        if cleaned.startswith("```json"):
+            cleaned = cleaned[7:]
+        elif cleaned.startswith("```"):
+            cleaned = cleaned[3:]
+        
+        if cleaned.endswith("```"):
+            cleaned = cleaned[:-3]
+        
+        cleaned = cleaned.strip()
+        
+        # Essai 1: Parser directement
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError as e:
+            logger.debug(f"Premier parsing échoué: {e}")
+        
+        # Essai 2: Chercher le JSON avec regex
+        json_pattern = r'\{[\s\S]*\}'
+        match = re.search(json_pattern, cleaned)
+        if match:
+            try:
+                return json.loads(match.group())
+            except json.JSONDecodeError:
+                pass
+        
+        # Essai 3: Nettoyer les échappements problématiques
+        cleaned = re.sub(r'\\(?!["\\/bfnrtu])', r'', cleaned)
+        
+        # Essai 4: Réparer les guillemets non fermés
+        def fix_unclosed_quotes(text):
+            count = 0
+            result = []
+            for char in text:
+                if char == '"':
+                    count += 1
+                result.append(char)
+            # Si nombre impair de guillemets, en ajouter un à la fin
+            if count % 2 == 1:
+                result.append('"')
+            return ''.join(result)
+        
+        cleaned = fix_unclosed_quotes(cleaned)
+        
+        # Essai 5: Réparer les accolades/crochets non fermés
+        stack = []
+        for char in cleaned:
+            if char == '{' or char == '[':
+                stack.append(char)
+            elif char == '}':
+                if stack and stack[-1] == '{':
+                    stack.pop()
+            elif char == ']':
+                if stack and stack[-1] == '[':
+                    stack.pop()
+        
+        # Fermer les balises manquantes
+        for char in reversed(stack):
+            cleaned += '}' if char == '{' else ']'
+        
+        # Essai final
+        return json.loads(cleaned)
+        
+    except Exception as e:
+        logger.error(f"Échec total du parsing JSON: {e}")
+        logger.debug(f"Texte d'origine: {response_text[:500]}")
+        
+        # Retourner une structure par défaut
+        return {
+            "analyse": {
+                "nature": "Information",
+                "sujet_principal": "Erreur d'analyse",
+                "resume": "L'analyse IA a rencontré une erreur de parsing",
+                "mots_cles": ["erreur", "analyse"],
+                "ton": "Formel",
+                "actions_requises": ["Vérification manuelle"]
+            },
+            "classification": {
+                "categorie_suggeree": "ADMINISTRATIF",
+                "service_suggere": "Secrétariat Général",
+                "confiance_categorie": 0.1,
+                "confiance_service": 0.1
+            },
+            "priorite": {
+                "niveau": "NORMALE",
+                "delai_recommandé_jours": 10,
+                "raison": "Erreur d'analyse IA"
+            },
+            "extraction": {
+                "dates_importantes": [],
+                "montants": [],
+                "references": [],
+                "personnes_impliquees": []
+            }
+        }
+
 class CourrierGeminiService:
     """
-    Service d'analyse de courrier avec Gemini AI
+    Service d'analyse de courrier avec Gemini AI - Version corrigée
     """
     
     def __init__(self):
-        self.gemini = GeminiService()
-        self.model = "gemini-2.5-flash"
+        # Vérifier que la clé API est configurée
+        if not hasattr(settings, 'GEMINI_API_KEY') or not settings.GEMINI_API_KEY:
+            logger.error("CLÉ API GEMINI NON CONFIGURÉE !")
+            raise ValueError("La clé API Gemini n'est pas configurée dans les settings.")
         
+        try:
+            from .gemini_base import GeminiService
+            self.gemini = GeminiService()
+            self.model = "gemini-2.5-flash"
+            logger.info("Service Gemini initialisé avec succès")
+        except Exception as e:
+            logger.error(f"Échec initialisation Gemini: {e}")
+            raise
+    
+# Dans gemini_courrier_service.py
     def analyser_courrier(self, courrier):
         """
-        Analyse complète d'un courrier avec Gemini AI
-        Retourne un dictionnaire avec:
-        - catégorie
-        - service recommandé
-        - priorité
-        - résumé
-        - mots-clés
-        - actions suggérées
+        Analyse complète d'un courrier avec extraction de toutes les informations
         """
         try:
-            # Préparer le texte à analyser
-            texte_analyse = self._preparer_texte_analyse(courrier)
+            # Préparer le texte pour l'analyse
+            texte_complet = f"""
+            OBJET: {courrier.objet or ''}
+            EXPÉDITEUR: {courrier.expediteur_nom or ''}
+            EMAIL: {courrier.expediteur_email or ''}
+            TÉLÉPHONE: {courrier.expediteur_telephone or ''}
+            ADRESSE: {courrier.expediteur_adresse or ''}
+            DATE: {courrier.date_reception or ''}
+            CONTENU:
+            {courrier.contenu_texte or ''}
+            """
             
-            if not texte_analyse:
-                logger.warning(f"Pas de texte pour analyser le courrier {courrier.id}")
-                return None
+            # Prompt amélioré pour l'IA
+            prompt = f"""
+            Analyse ce document et extrait toutes les informations suivantes:
             
-            # Construire le prompt pour Gemini
-            prompt = self._construire_prompt_analyse(texte_analyse, courrier)
+            1. CATÉGORIE: Quelle est la catégorie administrative (ex: RH, Finances, Technique, Juridique, etc.)
+            2. SERVICE: À quel service doit-il être imputé (ex: Secrétariat Général, RH, Finances, etc.)
+            3. PRIORITÉ: Quelle est la priorité (URGENTE, HAUTE, NORMALE, BASSE) et pourquoi
+            4. CONFIDENTIALITÉ: Quelle est le niveau de confidentialité (CONFIDENTIELLE, RESTREINTE, NORMALE)
+            5. RÉSUMÉ: Fais un résumé de 3-4 lignes
+            6. MOTS-CLÉS: Liste 5-10 mots-clés importants
+            7. DATE: Identifie la date du document si présente
+            8. EXPÉDITEUR: Identifie le nom complet de l'expéditeur
             
-            # Appeler Gemini
-            result = self.gemini.generate_content(prompt, self.model)
+            Document à analyser:
+            {texte_complet}
             
-            if result["success"]:
-                # Parser la réponse JSON
-                analyse_data = self._parser_reponse_gemini(result["text"])
+            Retourne la réponse au format JSON avec cette structure:
+            {{
+                "classification": {{
+                    "categorie_suggeree": "nom de la catégorie",
+                    "service_suggere": "nom du service",
+                    "confiance_categorie": 0.0 à 1.0,
+                    "confiance_service": 0.0 à 1.0
+                }},
+                "priorite": {{
+                    "niveau": "URGENTE/HAUTE/NORMALE/BASSE",
+                    "raison": "explication",
+                    "confiance": 0.0 à 1.0
+                }},
+                "confidentialite_suggestion": "CONFIDENTIELLE/RESTREINTE/NORMALE",
+                "analyse": {{
+                    "resume": "résumé du document",
+                    "mots_cles": ["mot1", "mot2", ...]
+                }}
+            }}
+            """
+            
+            # Appeler l'API Gemini
+            response = self.model.generate_content(prompt)
+            
+            # Parser la réponse JSON
+            import json
+            import re
+            
+            # Extraire le JSON de la réponse
+            response_text = response.text
+            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+            
+            if json_match:
+                result = json.loads(json_match.group())
                 
-                if analyse_data:
-                    # Enrichir avec des informations supplémentaires
-                    analyse_data = self._enrichir_analyse(analyse_data, courrier)
-                    
-                    # Journaliser l'analyse
-                    self._journaliser_analyse(courrier, analyse_data, result.get("token_usage", {}))
-                    
-                    return analyse_data
-                else:
-                    logger.error(f"Impossible de parser la réponse Gemini pour {courrier.id}")
+                # Enrichir avec l'extraction d'expéditeur si disponible
+                if not courrier.expediteur_nom and 'expediteur' in response_text:
+                    # Tenter d'extraire l'expéditeur du texte
+                    expediteur_match = re.search(r'EXPÉDITEUR[:\s]+([^\n]+)', response_text, re.IGNORECASE)
+                    if expediteur_match:
+                        result['expediteur'] = {"nom": expediteur_match.group(1).strip()}
+                
+                return result
             else:
-                logger.error(f"Erreur Gemini pour {courrier.id}: {result.get('error')}")
+                # Retourner un résultat par défaut
+                return {
+                    "classification": {
+                        "categorie_suggeree": "ADMINISTRATIF",
+                        "service_suggere": "Secrétariat Général",
+                        "confiance_categorie": 0.3,
+                        "confiance_service": 0.3
+                    },
+                    "priorite": {
+                        "niveau": "NORMALE",
+                        "raison": "Document administratif standard",
+                        "confiance": 0.5
+                    },
+                    "confidentialite_suggestion": "NORMALE",
+                    "analyse": {
+                        "resume": texte_complet[:200],
+                        "mots_cles": ["document", "administratif"]
+                    }
+                }
                 
-            return None
-            
         except Exception as e:
-            logger.error(f"Erreur analyse courrier {courrier.id} avec Gemini: {e}", exc_info=True)
-            return None
+            logger.error(f"Erreur analyse Gemini: {e}")
+            raise e   
+    def _construire_prompt_simplifie(self, texte_courrier, courrier):
+        """
+        Construit un prompt SIMPLE et ROBUSTE pour Gemini
+        """
+        # Obtenir les catégories et services
+        categories = list(Category.objects.values_list('name', flat=True)[:20])  # Limiter pour éviter trop long
+        services = list(Service.objects.values_list('nom', flat=True)[:20])
+        
+        prompt = f"""Tu es un assistant IA qui analyse des courriers administratifs.
+
+COURRIER À ANALYSER:
+{texte_courrier}
+
+INSTRUCTIONS:
+1. Analyse ce courrier
+2. Réponds UNIQUEMENT en format JSON valide
+3. Suis EXACTEMENT ce format:
+
+{{
+  "categorie_suggeree": "Choisis parmi: {', '.join(categories)}",
+  "service_suggere": "Choisis parmi: {', '.join(services)}",
+  "confiance_categorie": 0.95,
+  "confiance_service": 0.95,
+  "priorite_niveau": "BASSE ou NORMALE ou HAUTE ou URGENTE",
+  "priorite_raison": "Explique brièvement",
+  "resume": "Résume en 2 phrases"
+}}
+
+RÈGLES IMPORTANTES:
+- Les catégories et services DOIVENT être exactement dans les listes ci-dessus
+- Si incertain, utilise "ADMINISTRATIF" et "Secrétariat Général"
+- Réponds UNIQUEMENT avec le JSON, rien d'autre avant ou après"""
+        
+        return prompt
+    
+    def _valider_structure_analyse(self, data):
+        """Valide la structure minimale de l'analyse"""
+        required_keys = ['categorie_suggeree', 'service_suggere']
+        return all(key in data for key in required_keys)
+    
+    def _corriger_structure_analyse(self, data):
+        """Corrige la structure de l'analyse"""
+        default = self._get_analyse_par_defaut()
+        
+        if not isinstance(data, dict):
+            return default
+        
+        # Fusionner avec les valeurs par défaut
+        corrected = default.copy()
+        corrected.update(data)
+        
+        return corrected
     
     def _preparer_texte_analyse(self, courrier):
-        """
-        Prépare le texte à analyser depuis le courrier
-        """
+        """Prépare le texte à analyser"""
         texte_parts = []
         
-        # Ajouter l'objet
         if courrier.objet:
             texte_parts.append(f"OBJET: {courrier.objet}")
-        
-        # Ajouter le contenu texte (OCR)
         if courrier.contenu_texte:
-            texte_parts.append(f"CONTENU:\n{courrier.contenu_texte}")
-        
-        # Ajouter l'expéditeur
+            texte_parts.append(f"CONTENU: {courrier.contenu_texte[:2000]}")  # Limiter la taille
         if courrier.expediteur_nom:
             texte_parts.append(f"EXPÉDITEUR: {courrier.expediteur_nom}")
-            if courrier.expediteur_email:
-                texte_parts.append(f"EMAIL: {courrier.expediteur_email}")
-        
-        # Ajouter des métadonnées
-        if courrier.date_reception:
-            texte_parts.append(f"DATE RECEPTION: {courrier.date_reception}")
         
         return "\n\n".join(texte_parts) if texte_parts else ""
     
-    def _construire_prompt_analyse(self, texte_courrier, courrier):
-        """
-        Construit le prompt pour l'analyse du courrier
-        """
-        # Obtenir les catégories et services existants pour le contexte
-        categories = Category.objects.values_list('name', flat=True)
-        services = Service.objects.values_list('nom', flat=True)
-        
-        prompt = f"""
-        Tu es un expert en analyse de courrier administratif pour une entreprise.
-        Analyse le courrier suivant et fournis une réponse au format JSON strict.
-
-        COURRIER À ANALYSER:
-        {texte_courrier}
-
-        TÂCHES:
-        1. Identifier la nature du courrier
-        2. Déterminer la catégorie appropriée
-        3. Identifier le service compétent
-        4. Évaluer l'urgence et la priorité
-        5. Extraire les informations clés
-        6. Suggérer des actions
-
-        FORMAT DE RÉPONSE (JSON stricte):
-        {{
-            "analyse": {{
-                "nature": "string",  // ex: "Demande", "Réclamation", "Facture", "Candidature", "Information"
-                "sujet_principal": "string",
-                "resume": "string",  // Résumé en 2-3 phrases
-                "mots_cles": ["mot1", "mot2", ...],
-                "ton": "string",  // ex: "Formel", "Urgent", "Amiable", "Réclamant"
-                "actions_requises": ["action1", "action2", ...]
-            }},
-            "classification": {{
-                "categorie_suggeree": "string",  // Doit correspondre à une catégorie existante
-                "service_suggere": "string",  // Doit correspondre à un service existant
-                "confiance_categorie": 0.0-1.0,
-                "confiance_service": 0.0-1.0
-            }},
-            "priorite": {{
-                "niveau": "BASSE|NORMALE|HAUTE|URGENTE",
-                "delai_recommandé_jours": number,
-                "raison": "string"
-            }},
-            "extraction": {{
-                "dates_importantes": ["date1", "date2"],
-                "montants": ["montant1", "montant2"],
-                "references": ["ref1", "ref2"],
-                "personnes_impliquees": ["personne1", "personne2"]
-            }}
-        }}
-
-        CONTEXTE (catégories existantes):
-        Catégories disponibles: {', '.join(categories)}
-        Services disponibles: {', '.join(services)}
-
-        RÈGLES:
-        - Toujours retourner du JSON valide
-        - Les catégories et services doivent correspondre exactement aux noms fournis
-        - Si incertain, utiliser "ADMINISTRATIF" et "Secrétariat Général"
-        - Priorité "URGENTE" seulement pour les délais < 48h ou mentions explicites
-        - Ne pas inventer de catégories ou services
-
-        Réponds uniquement avec le JSON, sans commentaires, sans ```json, rien d'autre.
-        """
-        
-        return prompt
-    
-    def _parser_reponse_gemini(self, reponse_text):
-        """
-        Parse la réponse textuelle de Gemini en JSON
-        """
-        try:
-            # Nettoyer la réponse
-            cleaned_text = reponse_text.strip()
-            
-            # Retirer les marqueurs de code si présents
-            if cleaned_text.startswith("```json"):
-                cleaned_text = cleaned_text[7:]
-            elif cleaned_text.startswith("```"):
-                cleaned_text = cleaned_text[3:]
-            
-            if cleaned_text.endswith("```"):
-                cleaned_text = cleaned_text[:-3]
-            
-            cleaned_text = cleaned_text.strip()
-            
-            # Parser le JSON
-            data = json.loads(cleaned_text)
-            return data
-            
-        except json.JSONDecodeError as e:
-            logger.error(f"Erreur parsing JSON Gemini: {e}")
-            logger.debug(f"Texte à parser: {reponse_text[:500]}")
-            
-            # Tentative de récupération avec regex
-            import re
-            json_match = re.search(r'\{.*\}', reponse_text, re.DOTALL)
-            if json_match:
-                try:
-                    return json.loads(json_match.group())
-                except:
-                    pass
-            
-            return None
-    
     def _enrichir_analyse(self, analyse_data, courrier):
-        """
-        Enrichit les données d'analyse avec des informations du système
-        """
-        # Rechercher les objets Category et Service correspondants
-        if "classification" in analyse_data:
-            categorie_nom = analyse_data["classification"].get("categorie_suggeree")
-            service_nom = analyse_data["classification"].get("service_suggere")
-            
+        """Enrichit l'analyse avec les objets réels"""
+        try:
             # Chercher la catégorie
+            categorie_nom = analyse_data.get('categorie_suggeree')
             if categorie_nom:
-                try:
-                    category = Category.objects.filter(name__icontains=categorie_nom).first()
-                    if category:
-                        analyse_data["classification"]["categorie_id"] = category.id
-                        analyse_data["classification"]["categorie_nom_complet"] = category.name
-                except Exception as e:
-                    logger.warning(f"Erreur recherche catégorie {categorie_nom}: {e}")
+                category = Category.objects.filter(name__icontains=categorie_nom).first()
+                if category:
+                    analyse_data['categorie_id'] = category.id
             
             # Chercher le service
+            service_nom = analyse_data.get('service_suggere')
             if service_nom:
-                try:
-                    service = Service.objects.filter(nom__icontains=service_nom).first()
-                    if service:
-                        analyse_data["classification"]["service_id"] = service.id
-                        analyse_data["classification"]["service_nom_complet"] = service.nom
-                        analyse_data["classification"]["service_chef"] = service.chef.email if service.chef else None
-                except Exception as e:
-                    logger.warning(f"Erreur recherche service {service_nom}: {e}")
-        
-        # Ajouter des métadonnées
-        analyse_data["metadata"] = {
-            "courrier_id": courrier.id,
-            "courrier_reference": courrier.reference,
-            "analysed_at": timezone.now().isoformat(),
-            "gemini_model": self.model
+                service = Service.objects.filter(nom__icontains(service_nom)).first()
+                if service:
+                    analyse_data['service_id'] = service.id
+            
+            # Standardiser le format de réponse
+            formatted_data = {
+                "classification": {
+                    "categorie_suggeree": analyse_data.get('categorie_suggeree', 'ADMINISTRATIF'),
+                    "service_suggere": analyse_data.get('service_suggere', 'Secrétariat Général'),
+                    "confiance_categorie": min(float(analyse_data.get('confiance_categorie', 0.5)), 0.95),
+                    "confiance_service": min(float(analyse_data.get('confiance_service', 0.5)), 0.95)
+                },
+                "priorite": {
+                    "niveau": analyse_data.get('priorite_niveau', 'NORMALE').upper(),
+                    "raison": analyse_data.get('priorite_raison', 'Priorité standard')
+                }
+            }
+            
+            return formatted_data
+            
+        except Exception as e:
+            logger.error(f"Erreur enrichissement: {e}")
+            return self._get_analyse_par_defaut()
+    
+    def _get_analyse_par_defaut(self):
+        """Retourne une analyse par défaut"""
+        return {
+            "classification": {
+                "categorie_suggeree": "ADMINISTRATIF",
+                "service_suggere": "Secrétariat Général",
+                "confiance_categorie": 0.3,
+                "confiance_service": 0.3
+            },
+            "priorite": {
+                "niveau": "NORMALE",
+                "raison": "Analyse par défaut"
+            }
         }
-        
-        return analyse_data
     
     def _journaliser_analyse(self, courrier, analyse_data, token_usage):
-        """
-        Journalise l'analyse dans l'historique
-        """
+        """Journalise l'analyse"""
         try:
-            categorie = analyse_data.get("classification", {}).get("categorie_suggeree", "Non classé")
-            service = analyse_data.get("classification", {}).get("service_suggere", "Non attribué")
-            priorite = analyse_data.get("priorite", {}).get("niveau", "NORMALE")
-            
-            message = f"Analyse IA: Catégorie '{categorie}', Service '{service}', Priorité '{priorite}'"
-            
-            if token_usage:
-                tokens = token_usage.get("total_tokens", 0)
-                message += f" (Tokens: {tokens})"
-            
             ActionHistorique.objects.create(
                 courrier=courrier,
-                user=None,  # Analyse automatique
+                user=None,
                 action="ANALYSE_IA_GEMINI",
-                commentaire=message,
-                nouvelles_valeurs=json.dumps(analyse_data, ensure_ascii=False)
+                commentaire=f"Analyse IA: {analyse_data['classification']['categorie_suggeree']} -> {analyse_data['classification']['service_suggere']}"
             )
-            
-            logger.info(f"Analyse Gemini journalisée pour {courrier.reference}")
-            
         except Exception as e:
-            logger.error(f"Erreur journalisation analyse: {e}")
-    
-    def suggerer_reponse(self, courrier, analyse_data=None):
-        """
-        Suggère une réponse automatique basée sur l'analyse
-        """
-        try:
-            if not analyse_data:
-                analyse_data = self.analyser_courrier(courrier)
-            
-            if not analyse_data:
-                return None
-            
-            # Construire le prompt pour la réponse
-            prompt = self._construire_prompt_reponse(courrier, analyse_data)
-            
-            # Appeler Gemini
-            result = self.gemini.generate_content(prompt, self.model)
-            
-            if result["success"]:
-                reponse_text = result["text"]
-                
-                # Journaliser
-                ActionHistorique.objects.create(
-                    courrier=courrier,
-                    user=None,
-                    action="REPONSE_SUGGEREE_IA",
-                    commentaire="Réponse automatique suggérée par Gemini"
-                )
-                
-                return {
-                    "success": True,
-                    "reponse": reponse_text,
-                    "model_used": self.model,
-                    "token_usage": result.get("token_usage", {})
-                }
-            else:
-                return {
-                    "success": False,
-                    "error": result.get("error")
-                }
-                
-        except Exception as e:
-            logger.error(f"Erreur suggestion réponse pour {courrier.id}: {e}")
-            return None
-    
-    def _construire_prompt_reponse(self, courrier, analyse_data):
-        """
-        Construit le prompt pour générer une réponse
-        """
-        prompt = f"""
-        Tu es un assistant administratif rédigeant une réponse officielle.
-        
-        COURRIER ORIGINAL:
-        Objet: {courrier.objet}
-        Expéditeur: {courrier.expediteur_nom or 'Non spécifié'}
-        Date: {courrier.date_reception or 'Non spécifiée'}
-        
-        Contenu:
-        {courrier.contenu_texte or 'Aucun contenu disponible'}
-        
-        ANALYSE DU COURRIER:
-        {json.dumps(analyse_data, indent=2, ensure_ascii=False)}
-        
-        TÂCHE:
-        Rédige une réponse professionnelle et appropriée. 
-        
-        GUIDELINES:
-        - Ton formel et courtois
-        - Répondre à toutes les demandes identifiées
-        - Proposer des solutions ou orientations
-        - Indiquer les délais de traitement si applicable
-        - Signer avec "Le Service [NOM_DU_SERVICE]"
-        
-        FORMAT:
-        - Entête avec référence
-        - Formule d'appel
-        - Corps du message
-        - Formule de politesse
-        - Signature
-        
-        Réponds uniquement avec le texte de la réponse, sans commentaires.
-        """
-        
-        return prompt
+            logger.error(f"Erreur journalisation: {e}")
 
 # Instance globale
 gemini_courrier_service = CourrierGeminiService()

@@ -5,7 +5,7 @@ from django.shortcuts import get_object_or_404
 from rest_framework import viewsets, status, permissions, filters
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
+from rest_framework.parsers import  FormParser, JSONParser, MultiPartParser
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from django_filters.rest_framework import DjangoFilterBackend
@@ -30,6 +30,12 @@ import json
 from datetime import datetime, timedelta
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
+from rest_framework import status
+from rest_framework.parsers import MultiPartParser, FormParser
+from django.utils import timezone
+from django.db import transaction
+from django.db.models import Q
+# from analyse_data import analyse_data
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +111,15 @@ class CourrierViewSet(viewsets.ModelViewSet):
         """Création d'un courrier avec gestion des pièces jointes"""
         serializer = CourrierCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        logger.info(f"Données reçues pour creation: {request.data}")
         
+        if not serializer.is_valid():
+            logger.error(f"Erreurs de validation: {serializer.errors}")
+            return Response(
+                serializer.errors,
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         try:
             # Générer la référence
             type_courrier = serializer.validated_data.get('type', 'entrant')
@@ -574,6 +588,451 @@ class CourrierViewSet(viewsets.ModelViewSet):
         queryset = Courrier.objects.filter(type='sortant')
         serializer = CourrierListSerializer(queryset, many=True, context={'request': request})
         return Response(serializer.data)
+    
+        # Dans CourrierViewSet, ajoutez cette méthode
+    # @action(detail=False, methods=['post'], parser_classes=[MultiPartParser, FormParser])
+    # def analyze_ai(self, request):
+    #     """
+    #     Analyse d'un courrier avec IA sans le créer
+    #     """
+    #     try:
+    #         # Créer un objet courrier temporaire pour l'analyse
+    #         courrier_data = {
+    #             'objet': request.data.get('objet', ''),
+    #             'expediteur_nom': request.data.get('expediteur_nom', ''),
+    #             'expediteur_email': request.data.get('expediteur_email', ''),
+    #             'expediteur_adresse': request.data.get('expediteur_adresse', ''),
+    #             'date_reception': request.data.get('date_reception'),
+    #             'canal': request.data.get('canal', 'physique'),
+    #             'confidentialite': request.data.get('confidentialite', 'normale'),
+    #             'priorite': request.data.get('priorite', 'normale'),
+    #             'type': 'entrant'
+    #         }
+            
+    #         # Traiter l'OCR si demandé
+    #         texte_ocr = ""
+    #         if request.data.get('ocr') == 'true':
+    #             for fichier in request.FILES.getlist('pieces_jointes', []):
+    #                 try:
+    #                     # Sauvegarder temporairement le fichier
+    #                     import tempfile
+    #                     with tempfile.NamedTemporaryFile(delete=False, suffix=fichier.name) as tmp:
+    #                         for chunk in fichier.chunks():
+    #                             tmp.write(chunk)
+    #                         tmp_path = tmp.name
+                        
+    #                     # Utiliser le service OCR
+    #                     from workflow.services.ocr import process_ocr
+    #                     texte = process_ocr(tmp_path, None)  # None car pas de courrier réel
+    #                     if texte:
+    #                         texte_ocr += f"\n--- {fichier.name} ---\n{texte}\n"
+                        
+    #                     # Nettoyer le fichier temporaire
+    #                     import os
+    #                     os.unlink(tmp_path)
+                        
+    #                 except Exception as e:
+    #                     logger.error(f"Erreur OCR fichier {fichier.name}: {e}")
+            
+    #         # Analyser avec Gemini
+    #         from workflow.services.gemini_courrier_service import gemini_courrier_service
+            
+    #         if analyse_data:
+    #             return Response(analyse_data, status=status.HTTP_200_OK)
+    #         else:
+    #             return Response(
+    #                 {
+    #                     "error": "L'analyse IA a échoué",
+    #                     "classification": {
+    #                         "categorie_suggeree": "ADMINISTRATIF",
+    #                         "service_suggere": "Secrétariat Général",
+    #                         "confiance_categorie": 0.1,
+    #                         "confiance_service": 0.1
+    #                     },
+    #                     "priorite": {
+    #                         "niveau": "NORMALE",
+    #                         "raison": "Échec de l'analyse IA"
+    #                     }
+    #                 },
+    #                 status=status.HTTP_200_OK  # On retourne 200 même en cas d'erreur pour le frontend
+    #             )
+                
+    #     except Exception as e:
+    #         logger.error(f"Erreur analyse IA: {e}", exc_info=True)
+    #         return Response(
+    #             {"error": f"Erreur lors de l'analyse: {str(e)}"},
+    #             status=status.HTTP_500_INTERNAL_SERVER_ERROR
+    #         )
+
+    # Dans views.py, méthode analyze_ai du CourrierViewSet
+
+    # @action(detail=False, methods=['post'], parser_classes=[MultiPartParser, FormParser])
+    # def analyze_ai(self, request):
+    #     """
+    #     Analyse d'un courrier avec IA sans le créer
+    #     """
+    #     try:
+    #         # Créer un objet courrier temporaire pour l'analyse
+    #         courrier_data = {
+    #             'objet': request.data.get('objet', ''),
+    #             'expediteur_nom': request.data.get('expediteur_nom', ''),
+    #             'expediteur_email': request.data.get('expediteur_email', ''),
+    #             'expediteur_adresse': request.data.get('expediteur_adresse', ''),
+    #             'date_reception': request.data.get('date_reception'),
+    #             'canal': request.data.get('canal', 'physique'),
+    #             'confidentialite': request.data.get('confidentialite', 'normale'),
+    #             'priorite': request.data.get('priorite', 'normale'),
+    #             'type': 'entrant'
+    #         }
+            
+    #         # Traiter l'OCR si demandé
+    #         texte_ocr = ""
+    #         if request.data.get('ocr') == 'true':
+    #             for fichier in request.FILES.getlist('pieces_jointes', []):
+    #                 try:
+    #                     # Sauvegarder temporairement le fichier
+    #                     import tempfile
+    #                     with tempfile.NamedTemporaryFile(delete=False, suffix=fichier.name) as tmp:
+    #                         for chunk in fichier.chunks():
+    #                             tmp.write(chunk)
+    #                         tmp_path = tmp.name
+                        
+    #                     # Utiliser le service OCR
+    #                     from workflow.services.ocr import process_ocr
+    #                     texte = process_ocr(tmp_path, None)  # None car pas de courrier réel
+    #                     if texte:
+    #                         texte_ocr += f"\n--- {fichier.name} ---\n{texte}\n"
+                        
+    #                     # Nettoyer le fichier temporaire
+    #                     import os
+    #                     os.unlink(tmp_path)
+                        
+    #                 except Exception as e:
+    #                     logger.error(f"Erreur OCR fichier {fichier.name}: {e}")
+            
+    #         # Créer un objet courrier factice pour l'analyse
+    #         class MockCourrier:
+    #             def __init__(self, data, texte_ocr):
+    #                 self.id = 0
+    #                 self.reference = "TEMP"
+    #                 self.objet = data.get('objet', '')
+    #                 self.contenu_texte = texte_ocr
+    #                 self.expediteur_nom = data.get('expediteur_nom', '')
+    #                 self.expediteur_email = data.get('expediteur_email', '')
+    #                 self.date_reception = data.get('date_reception')
+    #                 self.type = data.get('type', 'entrant')
+            
+    #         mock_courrier = MockCourrier(courrier_data, texte_ocr)
+            
+    #         # Initialiser analyse_data à None
+    #         analyse_data = None
+            
+    #         try:
+    #             # Utiliser le service Gemini
+    #             from workflow.services.gemini_courrier_service import gemini_courrier_service
+    #             analyse_data = gemini_courrier_service.analyser_courrier(mock_courrier)
+    #         except Exception as e:
+    #             logger.error(f"Erreur lors de l'appel à Gemini: {e}")
+    #             # En cas d'erreur, utiliser le classifieur local
+    #             from workflow.services.classifier import classifier_courrier
+    #             result = classifier_courrier(mock_courrier)
+                
+    #             # Formater la réponse
+    #             analyse_data = {
+    #                 "classification": {
+    #                     "categorie_suggeree": result.get('category', 'ADMINISTRATIF'),
+    #                     "service_suggere": result.get('service_impute', 'Secrétariat Général'),
+    #                     "confiance_categorie": result.get('confidence', 0.5),
+    #                     "confiance_service": result.get('confidence', 0.5)
+    #                 },
+    #                 "priorite": {
+    #                     "niveau": result.get('priorite', 'NORMALE'),
+    #                     "raison": "Analyse locale (Gemini indisponible)"
+    #                 }
+    #             }
+            
+    #         # Si analyse_data est toujours None, on retourne une analyse par défaut
+    #         if not analyse_data:
+    #             analyse_data = {
+    #                 "classification": {
+    #                     "categorie_suggeree": "ADMINISTRATIF",
+    #                     "service_suggere": "Secrétariat Général",
+    #                     "confiance_categorie": 0.1,
+    #                     "confiance_service": 0.1
+    #                 },
+    #                 "priorite": {
+    #                     "niveau": "NORMALE",
+    #                     "raison": "Échec de l'analyse IA"
+    #                 }
+    #             }
+            
+    #         return Response(analyse_data, status=status.HTTP_200_OK)
+                
+    #     except Exception as e:
+    #         logger.error(f"Erreur analyse IA: {e}", exc_info=True)
+    #         return Response(
+    #             {"error": f"Erreur lors de l'analyse: {str(e)}"},
+    #             status=status.HTTP_500_INTERNAL_SERVER_ERROR
+    #         )
+
+
+    #     @action(detail=False, methods=['post'], parser_classes=[MultiPartParser, FormParser])
+    #     def analyze(self, request):
+    #         """
+    #         Analyse un fichier avec OCR et IA pour pré-remplir le formulaire
+    #         """
+    #         fichier = request.FILES.get('fichier')
+    #         if not fichier:
+    #             return Response(
+    #                 {"error": "Aucun fichier fourni"},
+    #                 status=status.HTTP_400_BAD_REQUEST
+    #             )
+            
+    #         # Traitement OCR
+    #         texte_ocr = ""
+    #         try:
+    #             texte_ocr = process_ocr(fichier.temporary_file_path())
+    #         except Exception as e:
+    #             logger.error(f"Erreur OCR: {str(e)}")
+            
+    #         # Classification IA
+    #         resultat_classification = {}
+    #         try:
+    #             # Simuler un courrier pour la classification
+    #             class CourrierTemp:
+    #                 def __init__(self, contenu_texte):
+    #                     self.contenu_texte = contenu_texte
+                
+    #             courrier_temp = CourrierTemp(texte_ocr)
+    #             resultat_classification = classifier_courrier(courrier_temp)
+    #         except Exception as e:
+    #             logger.error(f"Erreur classification IA: {str(e)}")
+            
+    #         # Extraction d'informations basiques
+    #         import re
+            
+    #         infos = {
+    #             'objet': '',
+    #             'expediteur_nom': '',
+    #             'expediteur_email': '',
+    #             'expediteur_telephone': '',
+    #         }
+            
+    #         if texte_ocr:
+    #             # Extraire l'objet (première ligne significative)
+    #             lines = texte_ocr.strip().split('\n')
+    #             for line in lines:
+    #                 if line.strip() and len(line.strip()) > 10:
+    #                     infos['objet'] = line.strip()[:200]
+    #                     break
+                
+    #             # Extraire les emails
+    #             email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+    #             emails = re.findall(email_pattern, texte_ocr)
+    #             if emails:
+    #                 infos['expediteur_email'] = emails[0]
+                
+    #             # Extraire les téléphones
+    #             phone_pattern = r'(\+?\d{1,3}[-.\s]?)?\(?\d{1,4}\)?[-.\s]?\d{1,4}[-.\s]?\d{1,9}'
+    #             phones = re.findall(phone_pattern, texte_ocr)
+    #             if phones:
+    #                 infos['expediteur_telephone'] = phones[0][0] if isinstance(phones[0], tuple) else phones[0]
+                
+    #             # Essayer d'extraire le nom de l'expéditeur
+    #             if "Expéditeur" in texte_ocr:
+    #                 match = re.search(r'Expéditeur\s*:\s*(.*)', texte_ocr, re.IGNORECASE)
+    #                 if match:
+    #                     infos['expediteur_nom'] = match.group(1).strip()
+    #             elif "De :" in texte_ocr:
+    #                 match = re.search(r'De\s*:\s*(.*)', texte_ocr, re.IGNORECASE)
+    #                 if match:
+    #                     infos['expediteur_nom'] = match.group(1).strip()
+            
+    #         # Construire la réponse
+    #         reponse = {
+    #             "texte_ocr": texte_ocr,
+    #             "classification": resultat_classification,
+    #             "infos": infos
+    #         }
+            
+    #         return Response(reponse, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['post'], parser_classes=[MultiPartParser, FormParser])
+    def analyze_ai(self, request):
+        """
+        Analyse d'un courrier avec IA sans le créer
+        """
+        try:
+            # Créer un objet courrier temporaire pour l'analyse
+            courrier_data = {
+                'objet': request.data.get('objet', ''),
+                'expediteur_nom': request.data.get('expediteur_nom', ''),
+                'expediteur_email': request.data.get('expediteur_email', ''),
+                'expediteur_adresse': request.data.get('expediteur_adresse', ''),
+                'date_reception': request.data.get('date_reception'),
+                'canal': request.data.get('canal', 'physique'),
+                'confidentialite': request.data.get('confidentialite', 'normale'),
+                'priorite': request.data.get('priorite', 'normale'),
+                'type': 'entrant'
+            }
+            
+            # Traiter l'OCR si demandé
+            texte_ocr = ""
+            if request.data.get('ocr') == 'true':
+                for fichier in request.FILES.getlist('pieces_jointes', []):
+                    try:
+                        import tempfile
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=fichier.name) as tmp:
+                            for chunk in fichier.chunks():
+                                tmp.write(chunk)
+                            tmp_path = tmp.name
+                        
+                        from workflow.services.ocr import process_ocr
+                        texte = process_ocr(tmp_path, None)
+                        if texte:
+                            texte_ocr += f"\n--- {fichier.name} ---\n{texte}\n"
+                        
+                        import os
+                        os.unlink(tmp_path)
+                        
+                    except Exception as e:
+                        logger.error(f"Erreur OCR fichier {fichier.name}: {e}")
+            
+            # Créer un courrier temporaire en base de données
+            from courriers.models import Courrier
+            from django.utils import timezone
+            
+            temp_courrier = Courrier.objects.create(
+                reference="TEMP_ANALYSE_" + str(uuid.uuid4())[:8],
+                type='entrant',
+                objet=courrier_data.get('objet', ''),
+                expediteur_nom=courrier_data.get('expediteur_nom', ''),
+                expediteur_email=courrier_data.get('expediteur_email', ''),
+                expediteur_adresse=courrier_data.get('expediteur_adresse', ''),
+                date_reception=courrier_data.get('date_reception') or timezone.now().date(),
+                canal=courrier_data.get('canal', 'physique'),
+                confidentialite=courrier_data.get('confidentialite', 'normale'),
+                priorite=courrier_data.get('priorite', 'normale'),
+                created_by=request.user,
+                contenu_texte=texte_ocr
+            )
+            
+            analyse_data = None
+            
+            try:
+                # Utiliser le service Gemini
+                from workflow.services.gemini_courrier_service import gemini_courrier_service
+                analyse_data = gemini_courrier_service.analyser_courrier(temp_courrier)
+            except Exception as e:
+                logger.error(f"Erreur lors de l'appel à Gemini: {e}")
+                # En cas d'erreur, utiliser le classifieur local
+                from workflow.services.classifier import classifier_courrier
+                result = classifier_courrier(temp_courrier)
+                
+                # Formater la réponse
+                analyse_data = {
+                    "classification": {
+                        "categorie_suggeree": result.get('category', 'ADMINISTRATIF'),
+                        "service_suggere": result.get('service_impute', 'Secrétariat Général'),
+                        "confiance_categorie": result.get('confidence', 0.5),
+                        "confiance_service": result.get('confidence', 0.5)
+                    },
+                    "priorite": {
+                        "niveau": result.get('priorite', 'NORMALE'),
+                        "raison": "Analyse locale (Gemini indisponible)"
+                    }
+                }
+            
+            # Rechercher les IDs pour la catégorie et le service à partir des noms
+            from core.models import Category, Service
+            
+            categorie_nom = analyse_data.get("classification", {}).get("categorie_suggeree")
+            service_nom = analyse_data.get("classification", {}).get("service_suggere")
+            
+            categorie_id = None
+            service_id = None
+            
+            if categorie_nom:
+                try:
+                    categorie = Category.objects.filter(name__icontains=categorie_nom).first()
+                    categorie_id = categorie.id if categorie else None
+                except Exception as e:
+                    logger.error(f"Erreur recherche catégorie {categorie_nom}: {e}")
+            
+            if service_nom:
+                try:
+                    service = Service.objects.filter(nom__icontains=service_nom).first()
+                    service_id = service.id if service else None
+                except Exception as e:
+                    logger.error(f"Erreur recherche service {service_nom}: {e}")
+            
+            # Mettre à jour l'analyse_data avec les IDs
+            if 'classification' not in analyse_data:
+                analyse_data['classification'] = {}
+            analyse_data['classification']['categorie_id'] = categorie_id
+            analyse_data['classification']['service_id'] = service_id
+            
+            # Supprimer le courrier temporaire
+            temp_courrier.delete()
+            
+            return Response(analyse_data, status=status.HTTP_200_OK)
+                
+        except Exception as e:
+            logger.error(f"Erreur analyse IA: {e}", exc_info=True)
+            return Response(
+                {"error": f"Erreur lors de l'analyse: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )   
+    # Ajoutez aussi cette action dans CourrierViewSet pour l'imputation rapide
+    # (si ce n'est pas déjà fait)
+        @action(detail=True, methods=['post'])
+        def imputer_rapide(self, request, pk=None):
+            """Imputation rapide d'un courrier"""
+            courrier = self.get_object()
+            service_id = request.data.get('service_id')
+            commentaire = request.data.get('commentaire', '')
+            
+            if not service_id:
+                return Response(
+                    {"error": "Le service est requis"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            try:
+                service = Service.objects.get(id=service_id)
+                
+                # Mettre à jour le courrier
+                courrier.service_impute = service
+                courrier.statut = 'impute'
+                courrier.save()
+                
+                # Créer une imputation
+                imputation = Imputation.objects.create(
+                    courrier=courrier,
+                    service=service,
+                    responsable=request.user,
+                    commentaire=commentaire
+                )
+                
+                # Journaliser
+                ActionHistorique.objects.create(
+                    courrier=courrier,
+                    user=request.user,
+                    action="IMPUTATION_RAPIDE",
+                    commentaire=f"Imputé au service {service.nom}"
+                )
+                
+                return Response({
+                    "message": "Courrier imputé avec succès",
+                    "courrier_id": courrier.id,
+                    "service": service.nom
+                }, status=status.HTTP_200_OK)
+                
+            except Service.DoesNotExist:
+                return Response(
+                    {"error": "Service non trouvé"},
+                    status=status.HTTP_404_NOT_FOUND
+                )
 
 
 class ImputationViewSet(viewsets.ModelViewSet):
@@ -622,6 +1081,9 @@ class PieceJointeViewSet(viewsets.ModelViewSet):
     
     def perform_create(self, serializer):
         serializer.save(uploaded_by=self.request.user)
+    
+    # dans views.py, ajoutez cette action à la classe CourrierViewSet :
+
 
 
 class ModeleCourrierViewSet(viewsets.ModelViewSet):
@@ -653,3 +1115,243 @@ class ModeleCourrierViewSet(viewsets.ModelViewSet):
             "pied_page": modele.pied_page,
             "modele": modele.nom
         })
+    
+# Dans views.py, ajoutez cette classe
+class ImputationDashboardViewSet(viewsets.ViewSet):
+    """
+    ViewSet pour le dashboard d'imputation
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def list(self, request):
+        """
+        Récupère tous les courriers en attente d'imputation
+        """
+        try:
+            # Courriers en attente d'imputation (statut = 'recu')
+            courriers_en_attente = Courrier.objects.filter(
+                Q(statut='recu') | Q(service_impute__isnull=True),
+                archived=False
+            ).select_related('category', 'service_impute').order_by('-date_reception')
+            
+            # Filtrer par type si spécifié
+            type_courrier = request.query_params.get('type')
+            if type_courrier:
+                courriers_en_attente = courriers_en_attente.filter(type=type_courrier)
+            
+            # Appliquer d'autres filtres
+            search = request.query_params.get('search')
+            if search:
+                courriers_en_attente = courriers_en_attente.filter(
+                    Q(objet__icontains=search) |
+                    Q(reference__icontains=search) |
+                    Q(expediteur_nom__icontains=search)
+                )
+            
+            # Serializer pour l'imputation
+            data = []
+            for courrier in courriers_en_attente:
+                # Analyser les suggestions IA si disponibles
+                suggestions_ia = []
+                if courrier.meta_analyse and 'classification' in courrier.meta_analyse:
+                    suggestions_ia = [
+                        {
+                            'service_id': courrier.meta_analyse['classification'].get('service_id'),
+                            'service_nom': courrier.meta_analyse['classification'].get('service_suggere'),
+                            'confiance': courrier.meta_analyse['classification'].get('confiance_service', 0)
+                        }
+                    ]
+                
+                data.append({
+                    'id': courrier.id,
+                    'reference': courrier.reference,
+                    'type': courrier.type,
+                    'type_display': courrier.get_type_display(),
+                    'objet': courrier.objet,
+                    'expediteur_nom': courrier.expediteur_nom,
+                    'expediteur_email': courrier.expediteur_email,
+                    'date_reception': courrier.date_reception,
+                    'category_id': courrier.category.id if courrier.category else None,
+                    'category_nom': courrier.category.name if courrier.category else None,
+                    'service_impute_id': courrier.service_impute.id if courrier.service_impute else None,
+                    'service_impute_nom': courrier.service_impute.nom if courrier.service_impute else None,
+                    'statut': courrier.statut,
+                    'confidentialite': courrier.confidentialite,
+                    'priorite': courrier.priorite,
+                    'meta_analyse': courrier.meta_analyse,
+                    'suggestions_ia': suggestions_ia,
+                    'has_ia_suggestion': bool(suggestions_ia)
+                })
+            
+            return Response(data, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            logger.error(f"Erreur récupération dashboard imputation: {e}")
+            return Response(
+                {"error": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    @action(detail=False, methods=['get'])
+    def statistiques(self, request):
+        """
+        Statistiques pour le dashboard d'imputation
+        """
+        try:
+            stats = {
+                'total_en_attente': Courrier.objects.filter(
+                    Q(statut='recu') | Q(service_impute__isnull=True),
+                    archived=False
+                ).count(),
+                'entrants_en_attente': Courrier.objects.filter(
+                    Q(statut='recu') | Q(service_impute__isnull=True),
+                    type='entrant',
+                    archived=False
+                ).count(),
+                'sortants_en_attente': Courrier.objects.filter(
+                    Q(statut='recu') | Q(service_impute__isnull=True),
+                    type='sortant',
+                    archived=False
+                ).count(),
+                'internes_en_attente': Courrier.objects.filter(
+                    Q(statut='recu') | Q(service_impute__isnull=True),
+                    type='interne',
+                    archived=False
+                ).count(),
+                'avec_suggestion_ia': Courrier.objects.filter(
+                    meta_analyse__isnull=False,
+                    archived=False
+                ).count(),
+            }
+            
+            return Response(stats, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            logger.error(f"Erreur statistiques imputation: {e}")
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+# Dans views.py, ajoutez cette action dans CourrierViewSet
+@action(detail=False, methods=['post'], parser_classes=[MultiPartParser, FormParser])
+def analyze_complete(self, request):
+    """
+    Analyse complète d'un courrier avec IA pour suggestions
+    """
+    try:
+        # Extraire les données du formulaire
+        data = {
+            'objet': request.data.get('objet', ''),
+            'expediteur_nom': request.data.get('expediteur_nom', ''),
+            'expediteur_email': request.data.get('expediteur_email', ''),
+            'expediteur_adresse': request.data.get('expediteur_adresse', ''),
+            'date_reception': request.data.get('date_reception'),
+            'canal': request.data.get('canal', 'physique'),
+            'confidentialite': request.data.get('confidentialite', 'normale'),
+            'priorite': request.data.get('priorite', 'normale'),
+            'type': 'entrant'
+        }
+        
+        # Traiter l'OCR si demandé
+        texte_ocr = ""
+        if request.data.get('ocr') == 'true':
+            for fichier in request.FILES.getlist('pieces_jointes', []):
+                try:
+                    import tempfile
+                    import os
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=fichier.name) as tmp:
+                        for chunk in fichier.chunks():
+                            tmp.write(chunk)
+                        tmp_path = tmp.name
+                    
+                    from workflow.services.ocr import process_ocr
+                    texte = process_ocr(tmp_path, None)
+                    if texte:
+                        texte_ocr += f"\n--- {fichier.name} ---\n{texte}\n"
+                    
+                    os.unlink(tmp_path)
+                    
+                except Exception as e:
+                    logger.error(f"Erreur OCR fichier {fichier.name}: {e}")
+        
+        # Analyser avec IA
+        from workflow.services.gemini_courrier_service import gemini_courrier_service
+        
+        # Créer un objet courrier factice
+        class MockCourrier:
+            def __init__(self, data, texte_ocr):
+                self.id = 0
+                self.reference = "TEMP_ANALYSE"
+                self.objet = data.get('objet', '')
+                self.contenu_texte = texte_ocr
+                self.expediteur_nom = data.get('expediteur_nom', '')
+                self.expediteur_email = data.get('expediteur_email', '')
+                self.expediteur_adresse = data.get('expediteur_adresse', '')
+                self.date_reception = data.get('date_reception')
+                self.canal = data.get('canal', 'physique')
+                self.confidentialite = data.get('confidentialite', 'normale')
+                self.type = data.get('type', 'entrant')
+        
+        mock_courrier = MockCourrier(data, texte_ocr)
+        analyse_data = gemini_courrier_service.analyser_courrier(mock_courrier)
+        
+        if not analyse_data:
+            return Response(
+                {"error": "L'analyse IA a échoué"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        
+        # Enrichir avec les IDs des objets
+        from core.models import Category, Service
+        
+        # Chercher la catégorie correspondante
+        categorie_nom = analyse_data.get("classification", {}).get("categorie_suggeree")
+        category = None
+        if categorie_nom:
+            category = Category.objects.filter(name__icontains(categorie_nom)).first()
+        
+        # Chercher le service correspondant
+        service_nom = analyse_data.get("classification", {}).get("service_suggere")
+        service = None
+        if service_nom:
+            service = Service.objects.filter(nom__icontains(service_nom)).first()
+        
+        # Préparer la réponse
+        response_data = {
+            "success": True,
+            "analyse": analyse_data.get("analyse", {}),
+            "classification": {
+                "categorie_suggeree": categorie_nom,
+                "service_suggere": service_nom,
+                "categorie_id": category.id if category else None,
+                "service_id": service.id if service else None,
+                "confiance_categorie": analyse_data.get("classification", {}).get("confiance_categorie", 0),
+                "confiance_service": analyse_data.get("classification", {}).get("confiance_service", 0)
+            },
+            "priorite": {
+                "niveau": analyse_data.get("priorite", {}).get("niveau", "NORMALE"),
+                "raison": analyse_data.get("priorite", {}).get("raison", ""),
+                "confiance": 0.8  # Valeur par défaut
+            },
+            "metadata": {
+                "timestamp": timezone.now().isoformat(),
+                "ocr_applied": request.data.get('ocr') == 'true',
+                "ocr_text_length": len(texte_ocr)
+            }
+        }
+        
+        # Ajouter une suggestion de confidentialité basée sur l'analyse
+        confidentialite_suggestion = "normale"
+        if "confidentiel" in (analyse_data.get("analyse", {}).get("resume", "") + analyse_data.get("analyse", {}).get("mots_cles", "")).lower():
+            confidentialite_suggestion = "confidentielle"
+        elif "restreint" in (analyse_data.get("analyse", {}).get("resume", "") + analyse_data.get("analyse", {}).get("mots_cles", "")).lower():
+            confidentialite_suggestion = "restreinte"
+        
+        response_data["confidentialite_suggestion"] = confidentialite_suggestion
+        
+        return Response(response_data, status=status.HTTP_200_OK)
+        
+    except Exception as e:
+        logger.error(f"Erreur analyse complète: {e}", exc_info=True)
+        return Response(
+            {"error": f"Erreur lors de l'analyse: {str(e)}"},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )

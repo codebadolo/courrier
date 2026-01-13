@@ -51,7 +51,7 @@ class Courrier(models.Model):
     expediteur_nom = models.CharField(max_length=255, blank=True, null=True)
     expediteur_adresse = models.TextField(blank=True, null=True)
     expediteur_email = models.EmailField(blank=True, null=True)
-    
+    expediteur_telephone = models.CharField(max_length=20, blank=True, null=True)
     destinataire_nom = models.CharField(max_length=255, blank=True, null=True)
     
     # Canal de réception/émission
@@ -59,6 +59,7 @@ class Courrier(models.Model):
         ('physique', 'Physique'),
         ('email', 'Email'),
         ('portail', 'Portail'),
+        ('telephone', 'Téléphone'),
         ('autre', 'Autre'),
     ]
     canal = models.CharField(max_length=20, choices=CANAL_CHOICES, default='physique')
